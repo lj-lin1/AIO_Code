@@ -25,16 +25,20 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "IOCtrl.h"
 #include "RS232.h"
 #include "RS485.h"
+#include "crc.h"
 #include "display.h"
-#include "dp83848.h"
-#include "func.h"
 #include "iwdg.h"
+#include "key.h"
 #include "lwip/netif.h"
+#include "render.h"
+#include "rtc.h"
 #include "stm32f4xx_hal.h"
 #include "string.h"
-#include "voice.h"
+#include "tcp_server.h"
+#include "udp_app.h"
 
 /* USER CODE END Includes */
 
@@ -42,8 +46,6 @@
 /* USER CODE BEGIN PTD */
 extern TIM_HandleTypeDef htim3;
 extern TIM_HandleTypeDef htim4;
-extern dp83848_Object_t DP83848;
-extern struct netif gnetif;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -78,59 +80,89 @@ const osThreadAttr_t ledTask_attributes = {
 };
 extern void Led_Task(void *argument);
 
-osThreadId_t IWDGTaskHandle;
-const osThreadAttr_t IWDGTask_attributes = {
-    .name = "IWDGTask",
-    .stack_size = 256,
-    .priority = (osPriority_t)osPriorityNormal,
+osThreadId_t IOCtrlTaskHandle;
+const osThreadAttr_t IOCtrlTask_attributes = {
+    .name = "IOCtrlTask",
+    .stack_size = 128 * 4,
+    .priority = (osPriority_t)osPriorityLow2,
 };
-extern void IWDG_Task(void *argument);
 
-osThreadId_t VoiceTaskHandle;
-const osThreadAttr_t Voice_Task_attributes = {
-    .name = "VoiceTask",
-    .stack_size = 512 * 2,
-    .priority = (osPriority_t)osPriorityRealtime3,
+osThreadId_t TestKeyTaskHandle;
+const osThreadAttr_t TestKeyTask_attributes = {
+    .name = "TestKeyTask",
+    .stack_size = 128 * 4,
+    .priority = (osPriority_t)osPriorityLow2,
 };
-extern void Voice_Task(void *argument);
 
 osThreadId_t Display_TaskHandle;
 const osThreadAttr_t Display_Task_attributes = {
     .name = "Display_Task",
     .stack_size = 512 * 4,
-    .priority = (osPriority_t)osPriorityRealtime2,
+    .priority = (osPriority_t)osPriorityLow3,
 };
 extern void Display_Task(void *argument);
 
-osThreadId_t PHY_TaskHandle;
-const osThreadAttr_t PHY_Task_attributes = {
-    .name = "PHY_Task",
-    .stack_size = 512,
+osThreadId_t MotorCtrl_TaskHandle;
+const osThreadAttr_t MotorCtrl_Task_attributes = {
+    .name = "MotorCtrl_Task",
+    .stack_size = 256 * 4,
     .priority = (osPriority_t)osPriorityRealtime1,
 };
-extern void Phy_Link_Task(void *argument);
+extern void MotorCtrl_Task(void *argument);
 
-osThreadId_t NET_TaskHandle;
-const osThreadAttr_t NET_Task_attributes = {
-    .name = "NET_Task",
-    .stack_size = 512 * 4,
+osThreadId_t MotorData_TaskHandle;
+const osThreadAttr_t MotorData_Task_attributes = {
+    .name = "MotorData_Task",
+    .stack_size = 256 * 4,
     .priority = (osPriority_t)osPriorityRealtime2,
 };
-extern void Net_Manager_Task(void *argument);
+extern void MotorData_Task(void *argument);
+
+osThreadId_t TCP_TaskHandle;
+const osThreadAttr_t TCP_Task_attributes = {
+    .name = "TCP_Task",
+    .stack_size = 512 * 4,
+    .priority = (osPriority_t)osPriorityRealtime4,
+};
+extern void TCP_Manager_Task(void *argument);
+
+osThreadId_t Udp_TaskHandle;
+const osThreadAttr_t Udp_Task_attributes = {
+    .name = "Udp_Task",
+    .stack_size = 256 * 4,
+    .priority = (osPriority_t)osPriorityRealtime4,
+};
+extern void UDP_Manager_Task(void *argument);
+
+osThreadId_t TcpParse_TaskHandle;
+const osThreadAttr_t TcpParse_Task_attributes = {
+    .name = "TcpParse_Task",
+    .stack_size = 512 * 4,
+    .priority = (osPriority_t)osPriorityRealtime5,
+};
+extern void TcpParse_Task(void *argument);
+
+osThreadId_t Iap_TaskHandle;
+const osThreadAttr_t IapTask_attributes = {
+    .name = "iap_handle_task",
+    .stack_size = 512 * 4,
+    .priority = (osPriority_t)osPriorityRealtime5,
+};
+extern void Iap_Task(void *argument);
 
 osThreadId_t RS485_TaskHandle;
 const osThreadAttr_t RS485_Task_attributes = {
     .name = "RS485_Task",
-    .stack_size = 512 * 2,
-    .priority = (osPriority_t)osPriorityRealtime2,
+    .stack_size = 512 * 4,
+    .priority = (osPriority_t)osPriorityRealtime5,
 };
 extern void RS485_Task(void *argument);
 
 osThreadId_t RS232_TaskHandle;
 const osThreadAttr_t RS232_Task_attributes = {
     .name = "RS232_Task",
-    .stack_size = 512 * 2,
-    .priority = (osPriority_t)osPriorityRealtime2,
+    .stack_size = 512 * 4,
+    .priority = (osPriority_t)osPriorityRealtime5,
 };
 extern void RS232_Task(void *argument);
 /* USER CODE END FunctionPrototypes */
@@ -174,16 +206,23 @@ void MX_FREERTOS_Init(void)
     /* USER CODE BEGIN RTOS_THREADS */
     /* add threads, ... */
     ledTaskHandle = osThreadNew(Led_Task, NULL, &ledTask_attributes);
-    IWDGTaskHandle = osThreadNew(IWDG_Task, NULL, &IWDGTask_attributes);
-    VoiceTaskHandle = osThreadNew(Voice_Task, NULL, &Voice_Task_attributes);
-    init_hub75();
-    HAL_TIM_Base_Start_IT(&htim3);
-    HAL_TIM_Base_Start_IT(&htim4);
+    configASSERT(ledTaskHandle != NULL);
+    IOCtrlTaskHandle = osThreadNew(BSP_S123_Task, NULL, &IOCtrlTask_attributes);
+    configASSERT(IOCtrlTaskHandle != NULL);
+    TestKeyTaskHandle = osThreadNew(TestKey_Task, NULL, &TestKeyTask_attributes);
+    configASSERT(TestKeyTaskHandle != NULL);
     Display_TaskHandle = osThreadNew(Display_Task, NULL, &Display_Task_attributes);
+    configASSERT(Display_TaskHandle != NULL);
+    MotorCtrl_TaskHandle = osThreadNew(MotorCtrl_Task, NULL, &MotorCtrl_Task_attributes);
+    configASSERT(MotorCtrl_TaskHandle != NULL);
+    MotorData_TaskHandle = osThreadNew(MotorData_Task, NULL, &MotorData_Task_attributes);
+    configASSERT(MotorData_TaskHandle != NULL);
     RS485_Init();
     RS485_TaskHandle = osThreadNew(RS485_Task, NULL, &RS485_Task_attributes);
+    configASSERT(RS485_TaskHandle != NULL);
     RS232_Init();
     RS232_TaskHandle = osThreadNew(RS232_Task, NULL, &RS232_Task_attributes);
+    configASSERT(RS232_TaskHandle != NULL);
     /* USER CODE END RTOS_THREADS */
 
     /* USER CODE BEGIN RTOS_EVENTS */
@@ -203,9 +242,16 @@ void StartDefaultTask(void *argument)
     /* init code for LWIP */
     MX_LWIP_Init();
     /* USER CODE BEGIN StartDefaultTask */
-    DP83848_EnableIT(&DP83848, DP83848_LINK_DOWN_IT);
-    PHY_TaskHandle = osThreadNew(Phy_Link_Task, NULL, &PHY_Task_attributes);
-    NET_TaskHandle = osThreadNew(Net_Manager_Task, NULL, &NET_Task_attributes);
+    TCP_Server_Init();
+    TCP_TaskHandle = osThreadNew(TCP_Manager_Task, NULL, &TCP_Task_attributes);
+    configASSERT(TCP_TaskHandle != NULL);
+    UDP_Init();
+    Udp_TaskHandle = osThreadNew(UDP_Manager_Task, NULL, &Udp_Task_attributes);
+    configASSERT(Udp_TaskHandle != NULL);
+    TcpParse_TaskHandle = osThreadNew(TcpParse_Task, NULL, &TcpParse_Task_attributes);
+    configASSERT(TcpParse_TaskHandle != NULL);
+    Iap_TaskHandle = osThreadNew(Iap_Task, NULL, &IapTask_attributes);
+    configASSERT(Iap_TaskHandle != NULL);
     /* Infinite loop */
     for (;;)
     {
@@ -216,67 +262,27 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-
 void Led_Task(void *argument)
 {
+
+    uint32_t run_time = 0;
+
     for (;;)
     {
+        if (run_time >= 60)
+            HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, 0);
+        else
+            run_time++;
+
         HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_9);
-        osDelay(1000);
-    }
-}
 
-void IWDG_Task(void *argument)
-{
-    for (;;)
-    {
-        HAL_IWDG_Refresh(&hiwdg);
-        osDelay(3000);
-    }
-}
-
-void Display_Task(void *argument)
-{
-    fontSize = FONT24;
-
-    app_funcs_fill(BLACK);
-
-    displaydataupdate();
-
-    PowerOnDisplay();
-
-    osDelay(1000);
-
-    for (;;)
-    {
-        osThreadFlagsWait(0x01, osFlagsWaitAny, osWaitForever);
-
-        displaydataupdate();
-    }
-}
-
-void PHY_LinkProcess(void)
-{
-    static uint32_t last_state = 0;
-
-    uint32_t state = DP83848_GetLinkState(&DP83848);
-
-    if (state != last_state)
-    {
-        if (last_state == DP83848_STATUS_100MBITS_FULLDUPLEX && state == DP83848_STATUS_LINK_DOWN)
-        {
-            NVIC_SystemReset();
-        }
-        last_state = state;
-    }
-}
-
-void Phy_Link_Task(void *argument)
-{
-    for (;;)
-    {
-        PHY_LinkProcess();
         osDelay(500);
     }
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    while (1)
+        ;
 }
 /* USER CODE END Application */

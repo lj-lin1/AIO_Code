@@ -1,432 +1,282 @@
-
 #include "w25qxx.h"
-#include "spi.h"
 
-static uint8_t w25qxx_buff[W25Qx_SECTOR_SIZE] = {0};
+/* 片选控制（你自己根据工程实现） */
+#define CS_LOW() HAL_GPIO_WritePin(W25QXX_CS_GPIO_Port, W25QXX_CS_Pin, GPIO_PIN_RESET)
+#define CS_HIGH() HAL_GPIO_WritePin(W25QXX_CS_GPIO_Port, W25QXX_CS_Pin, GPIO_PIN_SET)
 
-W25QXX_HandleTypeDef hw25q64 = {0};
+/* ================= 私有变量 ================= */
 
-static void BSP_W25Qx_Reset(W25QXX_HandleTypeDef *w25qxx);
-static uint8_t BSP_W25Qx_GetStatus(W25QXX_HandleTypeDef *w25qxx);
-static void BSP_W25Qx_WriteNoCheck(W25QXX_HandleTypeDef *w25qxx, uint8_t *pBuffer, uint32_t WriteAddr, uint16_t NumByteToWrite);
+static SPI_HandleTypeDef *w25_spi;
 
-/**
- * @brief W25Qxx初始化
- * @retval W25Qxx状态
- */
-uint8_t BSP_W25Qx_Init(W25QXX_HandleTypeDef *w25qxx, SPI_HandleTypeDef *hspi)
+/* ================= SPI封装 ================= */
+
+static void SPI_Write(uint8_t *tx, uint16_t len)
 {
-    w25qxx->spi_port = hspi;
-
-    BSP_W25Qx_Reset(w25qxx);
-    BSP_W25Qx_Read_ID(w25qxx);
-    return BSP_W25Qx_GetStatus(w25qxx);
+    HAL_SPI_Transmit(w25_spi, tx, len, HAL_MAX_DELAY);
 }
 
-static void BSP_W25Qx_Reset(W25QXX_HandleTypeDef *w25qxx)
+static uint8_t SPI_RW(uint8_t data)
 {
-    uint8_t buf_cnt       = 0;
-    uint8_t reset_buff[2] = {0};
-
-    reset_buff[buf_cnt++] = RESET_ENABLE_CMD;
-    reset_buff[buf_cnt++] = RESET_MEMORY_CMD;
-
-    W25QXX_CS = 0;
-
-    HAL_SPI_Transmit(w25qxx->spi_port, reset_buff, buf_cnt, W25Qx_TIMEOUT_VALUE);
-
-    W25QXX_CS = 1;
+    uint8_t rx;
+    HAL_SPI_TransmitReceive(w25_spi, &data, &rx, 1, HAL_MAX_DELAY);
+    return rx;
 }
 
-/**
- * @brief 获取W25Qxx状态寄存器1读数
- * @retval W25Qxx状态
- */
-static uint8_t BSP_W25Qx_GetStatus(W25QXX_HandleTypeDef *w25qxx)
+static void SPI_Read(uint8_t *rx, uint32_t len)
 {
+    while (len--)
+    {
+        *rx++ = SPI_RW(0xFF);
+    }
+}
+
+/* ================= 内部函数 ================= */
+
+static void WriteEnable(void)
+{
+    uint8_t cmd = CMD_WRITE_ENABLE;
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    CS_HIGH();
+}
+
+static void WaitBusy(void)
+{
+    uint8_t cmd = CMD_READ_STATUS1;
     uint8_t status;
-    uint8_t buf_cnt        = 0;
-    uint8_t status_buff[2] = {0};
 
-    status_buff[buf_cnt++] = READ_STATUS_REG1_CMD;
+    CS_LOW();
+    SPI_Write(&cmd, 1);
 
-    W25QXX_CS = 0;
+    do
+    {
+        status = SPI_RW(0xFF);
+    } while (status & 0x01);
 
-    /* Send the read status command */
-    HAL_SPI_Transmit(w25qxx->spi_port, status_buff, buf_cnt, W25Qx_TIMEOUT_VALUE);
-    /* Reception of the data */
-    HAL_SPI_Receive(w25qxx->spi_port, &status, 1, W25Qx_TIMEOUT_VALUE);
+    CS_HIGH();
+}
 
-    W25QXX_CS = 1;
+static void SendAddr(uint32_t addr)
+{
+    uint8_t a[4] =
+        {
+            (addr >> 24) & 0xFF,
+            (addr >> 16) & 0xFF,
+            (addr >> 8) & 0xFF,
+            addr & 0xFF};
 
-    /* Check the value of the register */
-    if ((status & W25Q64_FSR_BUSY) != 0) {
-        return W25Qx_BUSY;
+    SPI_Write(a, 4);
+}
 
-    } else {
-        return W25Qx_OK;
+/* ================= 初始化 ================= */
+
+void W25Q256_Init(SPI_HandleTypeDef *hspi)
+{
+    w25_spi = hspi;
+
+    /* 进入4字节地址模式 */
+    uint8_t cmd = CMD_ENTER_4BYTE;
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    CS_HIGH();
+}
+
+/* ================= 基本功能 ================= */
+
+uint32_t W25Q256_ReadJEDECID(void)
+{
+    uint8_t cmd = CMD_JEDEC_ID;
+    uint8_t id[3];
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    SPI_Read(id, 3);
+    CS_HIGH();
+
+    return (id[0] << 16) | (id[1] << 8) | id[2];
+}
+
+void W25Q256_ReadUniqueID(uint8_t *id)
+{
+    uint8_t cmd = CMD_UNIQUE_ID;
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+
+    /* 4字节 dummy */
+    for (int i = 0; i < 4; i++)
+        SPI_RW(0xFF);
+
+    SPI_Read(id, 8);
+
+    CS_HIGH();
+}
+
+void W25Q256_Read(uint32_t addr, uint8_t *buf, uint32_t len)
+{
+    uint8_t cmd = CMD_READ_DATA;
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    SendAddr(addr);
+    SPI_Read(buf, len);
+    CS_HIGH();
+}
+
+void W25Q256_Write(uint32_t addr, uint8_t *buf, uint32_t len)
+{
+    uint32_t chunk;
+
+    while (len)
+    {
+        chunk = 256 - (addr % 256);
+        if (chunk > len)
+            chunk = len;
+
+        WriteEnable();
+
+        uint8_t cmd = CMD_PAGE_PROGRAM;
+
+        CS_LOW();
+        SPI_Write(&cmd, 1);
+        SendAddr(addr);
+        SPI_Write(buf, chunk);
+        CS_HIGH();
+
+        WaitBusy();
+
+        addr += chunk;
+        buf += chunk;
+        len -= chunk;
     }
 }
 
-/**
- * @brief W25Qxx写使能
- * @retval W25Qxx状态
- */
-uint8_t BSP_W25Qx_WriteEnable(W25QXX_HandleTypeDef *w25qxx)
+/* ================= 擦除 ================= */
+
+void W25Q256_SectorErase(uint32_t addr)
 {
-    uint32_t tickstart          = HAL_GetTick();
-    uint8_t buf_cnt             = 0;
-    uint8_t WriteEnable_buff[2] = {0};
+    WriteEnable();
 
-    WriteEnable_buff[buf_cnt++] = WRITE_ENABLE_CMD;
+    uint8_t cmd = CMD_SECTOR_ERASE;
 
-    W25QXX_CS = 0;
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    SendAddr(addr);
+    CS_HIGH();
 
-    HAL_SPI_Transmit(w25qxx->spi_port, WriteEnable_buff, buf_cnt, W25Qx_TIMEOUT_VALUE);
+    WaitBusy();
+}
 
-    W25QXX_CS = 1;
+void W25Q256_BlockErase64K(uint32_t addr)
+{
+    WriteEnable();
 
-    /* Wait the end of Flash writing */
-    while (BSP_W25Qx_GetStatus(w25qxx) == W25Qx_BUSY) {
-        if ((HAL_GetTick() - tickstart) > W25Qx_TIMEOUT_VALUE) {
-            return W25Qx_TIMEOUT;
+    uint8_t cmd = CMD_BLOCK_ERASE_64K;
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    SendAddr(addr);
+    CS_HIGH();
+
+    WaitBusy();
+}
+
+void W25Q256_ChipErase(void)
+{
+    WriteEnable();
+
+    uint8_t cmd = CMD_CHIP_ERASE;
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    CS_HIGH();
+
+    WaitBusy();
+}
+
+/* ================= 智能擦除 ================= */
+
+static void EraseRange(uint32_t addr, uint32_t len)
+{
+    uint32_t end = addr + len;
+
+    while (addr < end)
+    {
+        /* 优先64K */
+        if ((addr % 0x10000 == 0) && (end - addr >= 0x10000))
+        {
+            W25Q256_BlockErase64K(addr);
+            addr += 0x10000;
         }
-    }
+#if W25Q256_USE_32K_ERASE
+        /* 次优32K */
+        else if ((addr % 0x8000 == 0) && (end - addr >= 0x8000))
+        {
+            WriteEnable();
 
-    return W25Qx_OK;
-}
+            uint8_t cmd = CMD_BLOCK_ERASE_32K;
 
-/**
- * @brief 读取W25Qxx唯一ID
- * @param *ID 存放ID的数组
- * @retval NONE
- */
-void BSP_W25Qx_Read_ID(W25QXX_HandleTypeDef *w25qxx)
-{
-    uint8_t device_id[2] = {0};
-    uint8_t buf_cnt      = 0;
-    uint8_t id_buff[8]   = {0};
+            CS_LOW();
+            SPI_Write(&cmd, 1);
+            SendAddr(addr);
+            CS_HIGH();
 
-    id_buff[buf_cnt++] = READ_ID_CMD;
-    id_buff[buf_cnt++] = 0x00;
-    id_buff[buf_cnt++] = 0x00;
-    id_buff[buf_cnt++] = 0x00;
+            WaitBusy();
 
-    W25QXX_CS = 0;
-
-    HAL_SPI_Transmit(w25qxx->spi_port, id_buff, buf_cnt, W25Qx_TIMEOUT_VALUE);
-    HAL_SPI_Receive(w25qxx->spi_port, device_id, 2, W25Qx_TIMEOUT_VALUE);
-    w25qxx->device_id = (device_id[0] << 8) | device_id[1];
-
-    W25QXX_CS = 1;
-}
-
-/**
- * @brief 查询方式读数据（阻塞）
- * @param *pData    读缓存指令
- * @param ReadAddr  flash的地址
- * @param Size      字节大小
- * @retval W25Q64状态
- */
-uint8_t BSP_W25Qx_Read(W25QXX_HandleTypeDef *w25qxx, uint8_t *pData, uint32_t ReadAddr, uint32_t Size)
-{
-    uint8_t cmd_cnt = 0;
-    uint8_t cmd[5]  = {0};
-
-    cmd[cmd_cnt++] = READ_CMD;
-    if (w25qxx->device_id >= 0xef18)
-        cmd[cmd_cnt++] = (uint8_t)(ReadAddr >> 24);
-    cmd[cmd_cnt++] = (uint8_t)(ReadAddr >> 16);
-    cmd[cmd_cnt++] = (uint8_t)(ReadAddr >> 8);
-    cmd[cmd_cnt++] = (uint8_t)ReadAddr;
-
-    W25QXX_CS = 0;
-
-    HAL_SPI_Transmit(w25qxx->spi_port, cmd, cmd_cnt, 10);
-
-    if (HAL_SPI_Receive(w25qxx->spi_port, pData, Size, 10) != HAL_OK) {
-        return W25Qx_ERROR;
-    }
-
-    W25QXX_CS = 1;
-
-    return W25Qx_OK;
-}
-
-/**
- * @brief DMA方式读数据（非阻塞）
- * @param *pData    读缓存指令
- * @param ReadAddr  flash的地址
- * @param Size      字节大小
- * @retval W25Qxx状态
- */
-uint8_t BSP_W25Qx_ReadDMA(W25QXX_HandleTypeDef *w25qxx, uint8_t *pData, uint32_t ReadAddr, uint32_t Size)
-{
-    uint8_t cmd_cnt = 0;
-    uint8_t cmd[5]  = {0};
-
-    cmd[cmd_cnt++] = READ_CMD;
-    if (w25qxx->device_id >= 0xef18)
-        cmd[cmd_cnt++] = (uint8_t)(ReadAddr >> 24);
-    cmd[cmd_cnt++] = (uint8_t)(ReadAddr >> 16);
-    cmd[cmd_cnt++] = (uint8_t)(ReadAddr >> 8);
-    cmd[cmd_cnt++] = (uint8_t)ReadAddr;
-
-    W25QXX_CS = 0;
-
-    HAL_SPI_Transmit(w25qxx->spi_port, cmd, cmd_cnt, 10); // 发送读取命令
-
-    w25qxx->rx_cplt = false;
-
-    if (HAL_SPI_Receive_DMA(w25qxx->spi_port, pData, Size)) {
-        return W25Qx_ERROR;
-    }
-
-    while (w25qxx->rx_cplt == false);
-
-    W25QXX_CS = 1;
-
-    while (HAL_SPI_GetState(w25qxx->spi_port) == HAL_SPI_STATE_BUSY_RX);
-
-    return W25Qx_OK;
-}
-
-/**
- * @brief 页编程
- *
- * @param w25qxx w25qxx句柄
- * @param pBuffer 写入内容
- * @param WriteAddr flash的地址
- * @param NumByteToWrite 字节大小（最大256B）
- *
- * @note NumByteToWrite不应超过该页的剩余字节数
- *
- * @retval none
- */
-void BSP_W25Qx_WritePage(W25QXX_HandleTypeDef *w25qxx, uint8_t *pBuffer, uint32_t WriteAddr, uint16_t NumByteToWrite)
-{
-    uint8_t cmd[5];
-    uint8_t cmd_len = 0;
-
-    BSP_W25Qx_WriteEnable(w25qxx); // 发送 0x06
-
-    // 组装指令和地址
-    cmd[cmd_len++] = PAGE_PROG_CMD; // 0x02
-
-    // 只有当Flash容量 > 16MB (W25Q128) 且处于3字节模式下才需要特殊处理
-    // 此处假设 W25Q256 (ID: 0xEF19) 使用 4-Byte Address Mode
-    if (w25qxx->device_id >= 0xef19) {
-        cmd[cmd_len++] = (uint8_t)(WriteAddr >> 24);
-    }
-    cmd[cmd_len++] = (uint8_t)((WriteAddr) >> 16);
-    cmd[cmd_len++] = (uint8_t)((WriteAddr) >> 8);
-    cmd[cmd_len++] = (uint8_t)(WriteAddr);
-
-    // 确保Flash不忙
-    while (BSP_W25Qx_GetStatus(w25qxx) == W25Qx_BUSY);
-
-    W25QXX_CS = 0; // 使能片选
-
-    // 发送命令和地址
-    if (HAL_SPI_Transmit(w25qxx->spi_port, cmd, cmd_len, 100) != HAL_OK) {
-        W25QXX_CS = 1;
-        return; // 发送失败处理
-    }
-
-    // DMA发送数据
-    w25qxx->tx_cplt = false;
-    if (HAL_SPI_Transmit_DMA(w25qxx->spi_port, pBuffer, NumByteToWrite) == HAL_OK) {
-        // 等待传输完成标志，加一个超时机制防止死锁，片选在回调中除能
-        uint32_t tickstart = HAL_GetTick();
-        while (!w25qxx->tx_cplt) {
-            if (HAL_GetTick() - tickstart > 20) { // 256字节传输通常<1ms，给20ms超时
-                HAL_SPI_Abort(w25qxx->spi_port);
-                break;
-            }
+            addr += 0x8000;
         }
-    }
-
-    // 等待写入结束 (Flash内部编程)
-    while (BSP_W25Qx_GetStatus(w25qxx) == W25Qx_BUSY);
-}
-
-/**
- * @brief   无检验写数据
- * @param   *pBuffer          写缓存指令
- * @param   WriteAddr         flash的地址
- * @param   NumByteToWrite    字节大小(最大65535)
- * @retval  NONE
- */
-static void BSP_W25Qx_WriteNoCheck(W25QXX_HandleTypeDef *w25qxx, uint8_t *pBuffer, uint32_t WriteAddr, uint16_t NumByteToWrite)
-{
-    uint16_t PageRemain;
-    uint16_t NumByteToWriteNow;
-    PageRemain        = W25Qx_PAGE_SIZE - WriteAddr % W25Qx_PAGE_SIZE; // 单页剩余的字节数
-    NumByteToWriteNow = NumByteToWrite;
-    if (NumByteToWrite <= PageRemain)
-        PageRemain = NumByteToWriteNow; // 不大于256个字节
-    while (1) {
-        BSP_W25Qx_WritePage(w25qxx, pBuffer, WriteAddr, PageRemain);
-
-        if (NumByteToWriteNow == PageRemain) { // 写入结束
-            break;
-
-        } else { // NumByteToWrite>PageRemain
-            pBuffer += PageRemain;
-            WriteAddr += PageRemain;
-
-            NumByteToWriteNow -= PageRemain; // 减去已经写入了的字节数
-            if (NumByteToWriteNow > W25Qx_PAGE_SIZE)
-                PageRemain = W25Qx_PAGE_SIZE; // 一次可以写入256个字节
-            else
-                PageRemain = NumByteToWriteNow; // 不够256个字节了
-        }
-    };
-}
-
-/**
- * @brief   通用写数据
- * @param   *pData    写缓存指针
- * @param   WriteAddr flash的地址
- * @param   Size      字节大小
- * @note    会自动识别目标地址所在Sector是否写入数据，如果写入了数据，则会自动擦除
- * @retval  NONE
- */
-void BSP_W25Qx_EraseWrite(W25QXX_HandleTypeDef *w25qxx, uint8_t *pBuffer, uint32_t WriteAddr, uint16_t NumByteToWrite)
-{
-    uint16_t secpos;
-    uint16_t secoff;
-    uint16_t secremain;
-    uint16_t i;
-
-    memset(w25qxx_buff, 0, W25Qx_SECTOR_SIZE);
-    secpos    = WriteAddr / W25Qx_SECTOR_SIZE; // 扇区地址
-    secoff    = WriteAddr % W25Qx_SECTOR_SIZE; // 在扇区内的偏移
-    secremain = W25Qx_SECTOR_SIZE - secoff;    // 扇区剩余空间大小
-
-    if (NumByteToWrite <= secremain)
-        secremain = NumByteToWrite; // 不大于4096个字节
-
-    while (1) {
-        BSP_W25Qx_ReadDMA(w25qxx, w25qxx_buff, secpos * W25Qx_SECTOR_SIZE, W25Qx_SECTOR_SIZE); // 读出整个扇区的内容
-
-        for (i = 0; i < secremain; i++) { // 校验是否存有数据
-            if (w25qxx_buff[secoff + i] != 0XFF)
-                break; // 需要擦除
-        }
-
-        if (i < secremain) {                       // 需要擦除
-            BSP_W25Qx_EraseSector(w25qxx, secpos); // 擦除这个扇区
-            for (i = 0; i < secremain; i++) {      // 复制
-                w25qxx_buff[i + secoff] = pBuffer[i];
-            }
-            BSP_W25Qx_WriteNoCheck(w25qxx, w25qxx_buff, secpos * W25Qx_SECTOR_SIZE, W25Qx_SECTOR_SIZE); // 写入整个扇区
-
-        } else {
-            BSP_W25Qx_WriteNoCheck(w25qxx, pBuffer, WriteAddr, secremain); // 写已擦除地址,直接写入扇区剩余区间.
-        }
-
-        if (NumByteToWrite == secremain) { // 写入结束
-            break;
-
-        } else {                         // 写入未结束
-            secpos++;                    // 扇区地址+1
-            secoff = 0;                  // 偏移位置归0
-            pBuffer += secremain;        // 指针偏移
-            WriteAddr += secremain;      // 写地址偏移
-            NumByteToWrite -= secremain; // 字节数递减
-            if (NumByteToWrite > W25Qx_SECTOR_SIZE)
-                secremain = W25Qx_SECTOR_SIZE; // 下一个扇区还是写不完
-            else
-                secremain = NumByteToWrite; // 下一个扇区可以写完了
+#endif
+        /* 最小4K */
+        else
+        {
+            W25Q256_SectorErase(addr);
+            addr += 0x1000;
         }
     }
 }
 
-/**
- * @brief 扇区擦除
- *
- * @param w25qxx w25qxx句柄
- * @param SectorNum 扇区编号
- * @return uint8_t 操作结果
- */
-uint8_t BSP_W25Qx_EraseSector(W25QXX_HandleTypeDef *w25qxx, uint32_t SectorNum)
+/* ================= 自动擦除写入 ================= */
+
+void W25Q256_WriteAutoErase(uint32_t addr, uint8_t *buf, uint32_t len)
 {
-    uint8_t cmd[5];
-    uint8_t cmd_len    = 0;
-    uint32_t tickstart = HAL_GetTick();
+    /* 先擦除 */
+    EraseRange(addr, len);
 
-    BSP_W25Qx_WriteEnable(w25qxx);
-
-    // 组装指令和地址
-    cmd[cmd_len++] = SECTOR_ERASE_CMD;
-
-    if (w25qxx->device_id >= 0xef19) {
-        cmd[cmd_len++] = (uint8_t)((SectorNum * W25Qx_SECTOR_SIZE) >> 24);
-    }
-    cmd[cmd_len++] = (uint8_t)((SectorNum * W25Qx_SECTOR_SIZE) >> 16);
-    cmd[cmd_len++] = (uint8_t)((SectorNum * W25Qx_SECTOR_SIZE) >> 8);
-    cmd[cmd_len++] = (uint8_t)((SectorNum * W25Qx_SECTOR_SIZE));
-
-    /*Select the FLASH: Chip Select low */
-    W25QXX_CS = 0;
-    /* Send the read ID command */
-    HAL_SPI_Transmit(&hspi1, cmd, 4, W25Qx_TIMEOUT_VALUE);
-    /*Deselect the FLASH: Chip Select high */
-    W25QXX_CS = 1;
-
-    /* Wait the end of Flash writing */
-    while (BSP_W25Qx_GetStatus(w25qxx) == W25Qx_BUSY) {
-        /* Check for the Timeout */
-        if ((HAL_GetTick() - tickstart) > W25Qx_SECTOR_ERASE_MAX_TIME) {
-            return W25Qx_TIMEOUT;
-        }
-    }
-    return W25Qx_OK;
+    /* 再写入 */
+    W25Q256_Write(addr, buf, len);
 }
 
-/**
- * @brief   全片擦除
- * @retval  W25Qxx
- */
-uint8_t BSP_W25Qx_EraseChip(W25QXX_HandleTypeDef *w25qxx)
+/* ================= 状态/低功耗 ================= */
+
+uint8_t W25Q256_ReadStatus1(void)
 {
-    uint8_t cmd[5];
-    uint32_t tickstart = HAL_GetTick();
-    cmd[0]             = CHIP_ERASE_CMD;
+    uint8_t cmd = CMD_READ_STATUS1;
+    uint8_t status;
 
-    /* Enable write operations */
-    BSP_W25Qx_WriteEnable(w25qxx);
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    status = SPI_RW(0xFF);
+    CS_HIGH();
 
-    /*Select the FLASH: Chip Select low */
-    W25QXX_CS = 0;
-    /* Send the read ID command */
-    HAL_SPI_Transmit(&hspi1, cmd, 1, W25Qx_TIMEOUT_VALUE);
-    /*Deselect the FLASH: Chip Select high */
-    W25QXX_CS = 1;
-
-    /* Wait the end of Flash writing */
-    while (BSP_W25Qx_GetStatus(w25qxx) == W25Qx_BUSY) {
-        /* Check for the Timeout */
-        if ((HAL_GetTick() - tickstart) > W25Qx_BULK_ERASE_MAX_TIME) {
-            return W25Qx_TIMEOUT;
-        }
-    }
-    return W25Qx_OK;
+    return status;
 }
 
-void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+void W25Q256_PowerDown(void)
 {
-    if (hw25q64.spi_port == hspi) {
-        hw25q64.tx_cplt = true;
-        // W25QXX_CS       = 1;
-    }
+    uint8_t cmd = CMD_POWER_DOWN;
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    CS_HIGH();
 }
 
-void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+void W25Q256_WakeUp(void)
 {
-    if (hw25q64.spi_port == hspi) {
-        hw25q64.rx_cplt = true;
-        W25QXX_CS       = 1;
-    }
+    uint8_t cmd = CMD_RELEASE_POWERDOWN;
+
+    CS_LOW();
+    SPI_Write(&cmd, 1);
+    CS_HIGH();
 }

@@ -20,10 +20,12 @@
 #include "main.h"
 #include "adc.h"
 #include "cmsis_os.h"
+#include "crc.h"
 #include "dma.h"
 #include "gpio.h"
 #include "iwdg.h"
 #include "lwip.h"
+#include "rtc.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -81,7 +83,8 @@ int main(void)
 {
 
     /* USER CODE BEGIN 1 */
-
+    SCB->VTOR = FLASH_BASE | 0x40000;
+    __enable_irq();
     /* USER CODE END 1 */
 
     /* MCU Configuration--------------------------------------------------------*/
@@ -112,15 +115,12 @@ int main(void)
     MX_USART6_UART_Init();
     MX_ADC1_Init();
     MX_SPI1_Init();
+    MX_CRC_Init();
+    MX_RTC_Init();
     /* USER CODE BEGIN 2 */
-    BSP_W25Qx_Init(&hw25q64, &hspi1);
+    W25Q256_Init(&hspi1);
+    HAL_TIM_Base_Start_IT(&htim2);
     PowerOnIpSet();
-    IPreadbuff[0] = 0x49415001;                                                                                          // 改变进入IAP标识，其余不改变
-    IPreadbuff[1] = (F407_IP[0] << 24) + (F407_IP[1] << 16) + (F407_IP[2] << 8) + (F407_IP[3] << 0);                     // F407_IP
-    IPreadbuff[2] = (F407_NETMASK[0] << 24) + (F407_NETMASK[1] << 16) + (F407_NETMASK[2] << 8) + (F407_NETMASK[3] << 0); // F407_NETMASK
-    IPreadbuff[3] = (F407_WG[0] << 24) + (F407_WG[1] << 16) + (F407_WG[2] << 8) + (F407_WG[3] << 0);                     // F407_GW
-    IPreadbuff[4] = F407_PORT & 0xFFFF;
-    STMFLASH_Write(0x080E0000, IPreadbuff, 128);
     /* USER CODE END 2 */
 
     /* Init scheduler */
@@ -203,38 +203,23 @@ void SystemClock_Config(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     /* USER CODE BEGIN Callback 0 */
-
+    if (htim == &htim3)
+    {
+        send_hub75_buff();
+    }
+    if (htim->Instance == TIM4)
+    {
+        pwm_light_handle();
+    }
     /* USER CODE END Callback 0 */
     if (htim->Instance == TIM6)
     {
         HAL_IncTick();
     }
     /* USER CODE BEGIN Callback 1 */
-    if (htim == &htim3)
+    if (htim == &htim2)
     {
-        if (brightCnt == 0)
-        {
-            lamp_scan();
-        }
-
-        if (brightCnt < lightLev)
-        {
-            OE(0);
-            brightCnt++;
-        }
-        else
-        {
-            OE(1);
-            brightCnt++;
-            if (brightCnt >= 8)
-            {
-                brightCnt = 0;
-            }
-        }
-    }
-    else if (htim == &htim2)
-    {
-        g_ms_tick++;
+        HAL_IWDG_Refresh(&hiwdg);
     }
 
     /* USER CODE END Callback 1 */

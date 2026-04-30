@@ -1,98 +1,59 @@
-#ifndef DRIVERS_BSP_W25QXX_W25QXX_H
-#define DRIVERS_BSP_W25QXX_W25QXX_H
+#ifndef __W25Q256_H__
+#define __W25Q256_H__
 
-#include "main.h"
+#include "stdint.h"
+#include "spi.h"
 
-#define W25QXX_CS                      BITBAND_PERIPH(&(W25QXX_CS_GPIO_Port->ODR), 1)
+/* ================= 配置区 ================= */
 
-#define W25Qx_PAGE_SIZE                (0x100)
-#define W25Qx_SECTOR_SIZE              (W25Qx_PAGE_SIZE * 0x10)
-#define W25Qx_BLOCK_SIZE               (W25Qx_SECTOR_SIZE * 0x10)
-#define W25Qx_FLASH_SIZE               (W25Qx_BLOCK_SIZE * 0x80)
+/* 是否启用32K擦除（部分型号支持） */
+#define W25Q256_USE_32K_ERASE 1
 
-#define W25Qx_DUMMY_CYCLES_READ        4
-#define W25Qx_DUMMY_CYCLES_READ_QUAD   10
+/* ================= 命令定义 ================= */
 
-#define W25Qx_BULK_ERASE_MAX_TIME      250000
-#define W25Qx_SECTOR_ERASE_MAX_TIME    3000
-#define W25Qx_SUBSECTOR_ERASE_MAX_TIME 800
-#define W25Qx_TIMEOUT_VALUE            1000
+#define CMD_WRITE_ENABLE      0x06
+#define CMD_READ_STATUS1      0x05
 
-/* Reset Operations */
-#define RESET_ENABLE_CMD   0x66
-#define RESET_MEMORY_CMD   0x99
+#define CMD_PAGE_PROGRAM      0x02
+#define CMD_READ_DATA         0x03
 
-#define ENTER_QPI_MODE_CMD 0x38
-#define EXIT_QPI_MODE_CMD  0xFF
+#define CMD_SECTOR_ERASE      0x20 // 4K
+#define CMD_BLOCK_ERASE_32K   0x52
+#define CMD_BLOCK_ERASE_64K   0xD8
+#define CMD_CHIP_ERASE        0xC7
 
-/* Identification Operations */
-#define READ_ID_CMD       0x90
-#define DUAL_READ_ID_CMD  0x92
-#define QUAD_READ_ID_CMD  0x94
-#define READ_JEDEC_ID_CMD 0x9F
+#define CMD_JEDEC_ID          0x9F
+#define CMD_UNIQUE_ID         0x4B
 
-/* Read Operations */
-#define READ_CMD                 0x03
-#define FAST_READ_CMD            0x0B
-#define DUAL_OUT_FAST_READ_CMD   0x3B
-#define DUAL_INOUT_FAST_READ_CMD 0xBB
-#define QUAD_OUT_FAST_READ_CMD   0x6B
-#define QUAD_INOUT_FAST_READ_CMD 0xEB
+#define CMD_POWER_DOWN        0xB9
+#define CMD_RELEASE_POWERDOWN 0xAB
 
-/* Write Operations */
-#define WRITE_ENABLE_CMD  0x06
-#define WRITE_DISABLE_CMD 0x04
+#define CMD_ENTER_4BYTE       0xB7
 
-/* Register Operations */
-#define READ_STATUS_REG1_CMD  0x05
-#define READ_STATUS_REG2_CMD  0x35
-#define READ_STATUS_REG3_CMD  0x15
+/* ================= 外部接口 ================= */
 
-#define WRITE_STATUS_REG1_CMD 0x01
-#define WRITE_STATUS_REG2_CMD 0x31
-#define WRITE_STATUS_REG3_CMD 0x11
+void W25Q256_Init(SPI_HandleTypeDef *hspi);
 
-/* Program Operations */
-#define PAGE_PROG_CMD            0x02
-#define QUAD_INPUT_PAGE_PROG_CMD 0x32
+/* 基本功能 */
+uint32_t W25Q256_ReadJEDECID(void);
+void W25Q256_ReadUniqueID(uint8_t *id);
 
-/* Erase Operations */
-#define SECTOR_ERASE_CMD       0x20
-#define CHIP_ERASE_CMD         0xC7
+void W25Q256_Read(uint32_t addr, uint8_t *buf, uint32_t len);
+void W25Q256_Write(uint32_t addr, uint8_t *buf, uint32_t len);
 
-#define PROG_ERASE_RESUME_CMD  0x7A
-#define PROG_ERASE_SUSPEND_CMD 0x75
+/* 擦除 */
+void W25Q256_SectorErase(uint32_t addr);
+void W25Q256_BlockErase64K(uint32_t addr);
+void W25Q256_ChipErase(void);
 
-/* Flag Status Register */
-#define W25Q64_FSR_BUSY ((uint8_t)0x01) /*!< busy */
-#define W25Q64_FSR_WREN ((uint8_t)0x02) /*!< write enable */
-#define W25Q64_FSR_QE   ((uint8_t)0x02) /*!< quad enable */
+/* 自动擦除写入（推荐使用） */
+void W25Q256_WriteAutoErase(uint32_t addr, uint8_t *buf, uint32_t len);
 
-// #define W25Qx_Enable()  HAL_GPIO_WritePin(W25QXX_CS_GPIO_Port, W25QXX_CS_Pin, GPIO_PIN_RESET)
-// #define W25Qx_Disable() HAL_GPIO_WritePin(W25QXX_CS_GPIO_Port, W25QXX_CS_Pin, GPIO_PIN_SET)
+/* 低功耗 */
+void W25Q256_PowerDown(void);
+void W25Q256_WakeUp(void);
 
-#define W25Qx_OK      ((uint8_t)0x00)
-#define W25Qx_ERROR   ((uint8_t)0x01)
-#define W25Qx_BUSY    ((uint8_t)0x02)
-#define W25Qx_TIMEOUT ((uint8_t)0x03)
+/* 状态 */
+uint8_t W25Q256_ReadStatus1(void);
 
-typedef struct w25qxx_struct {
-    uint16_t device_id;
-    SPI_HandleTypeDef *spi_port;
-    bool tx_cplt;
-    bool rx_cplt;
-} W25QXX_HandleTypeDef;
-
-extern W25QXX_HandleTypeDef hw25q64;
-
-uint8_t BSP_W25Qx_Init(W25QXX_HandleTypeDef *w25qxx, SPI_HandleTypeDef *hspi);
-void BSP_W25Qx_Read_ID(W25QXX_HandleTypeDef *w25qxx);
-uint8_t BSP_W25Qx_Read(W25QXX_HandleTypeDef *w25qxx, uint8_t *pData, uint32_t ReadAddr, uint32_t Size);
-uint8_t BSP_W25Qx_ReadDMA(W25QXX_HandleTypeDef *w25qxx, uint8_t *pData, uint32_t ReadAddr, uint32_t Size);
-uint8_t BSP_W25Qx_WriteEnable(W25QXX_HandleTypeDef *w25qxx);
-void BSP_W25Qx_WritePage(W25QXX_HandleTypeDef *w25qxx, uint8_t *pBuffer, uint32_t WriteAddr, uint16_t NumByteToWrite);
-void BSP_W25Qx_EraseWrite(W25QXX_HandleTypeDef *w25qxx, uint8_t *pBuffer, uint32_t WriteAddr, uint16_t NumByteToWrite);
-uint8_t BSP_W25Qx_EraseSector(W25QXX_HandleTypeDef *w25qxx, uint32_t SectorNum);
-uint8_t BSP_W25Qx_EraseChip(W25QXX_HandleTypeDef *w25qxx);
-
-#endif // DRIVERS_BSP_W25QXX_W25QXX_H
+#endif

@@ -1,0 +1,7 @@
+r
+h
+erase
+loadfile .\build\Debug\AIO_Code.hex
+r
+g
+exit

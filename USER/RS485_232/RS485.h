@@ -5,6 +5,9 @@
 #include "cmsis_os.h"
 #include "queue.h"
 #include "semphr.h"
+#include "RingBuffer.h"
+
+extern RingBuffer RS485_BUFFER;
 
 /* ================= 用户配置 ================= */
 

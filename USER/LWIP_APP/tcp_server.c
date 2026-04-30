@@ -1,42 +1,40 @@
 #include "tcp_server.h"
 #include "RingBuffer.h"
 #include "cmsis_os2.h"
-#include "func.h"
+#include "iap_cmd.h"
 #include "lwip/tcpip.h"
-#include "stdlib.h"
-#include "string.h"
-#include "tcp_priv.h"
+#include "stm32f4xx.h"
 #include "w25qxx.h"
+#include <string.h>
+
+#define TCP_KEEPIDLE_DEFAULT 60000  // 60s 无数据开始探测
+#define TCP_KEEPINTVL_DEFAULT 10000 // 每10s发一次探测
+#define TCP_KEEPCNT_DEFAULT 5       // 最多5次
+
+NET_Parameter_t net_param = {
+    .IP = {0},
+    .NETMASK = {0},
+    .WG = {0},
+    .PORT = 10028,
+    .MAC = {0},
+};
+
+/* 接收缓存 */
+RingBuffer netRecvBuf = {0};
 
 extern uint32_t g_ms_tick;
 extern osEventFlagsId_t g_netEvent;
 
+extern void NetMgr_OnConnected(void);
+
+/* 事件位 */
 #define NET_EVT_RX (1U << 0)
 #define NET_EVT_CLOSE (1U << 1)
 
-/* 全局会话（单连接） */
+/* 当前会话 */
 tcp_session_t *g_session = NULL;
 
-/* 接收环形缓冲 */
-RingBuffer netRecvBuf = {0};
-
-/* ================= TCP ERR 回调 ================= */
-
-static void tcp_server_err(void *arg, err_t err)
-{
-    tcp_session_t *s = (tcp_session_t *)arg;
-
-    if (s)
-    {
-        free(s);
-        g_session = NULL;
-    }
-
-    osEventFlagsSet(g_netEvent, NET_EVT_CLOSE);
-}
-
-/* ================= TCP RECV 回调 ================= */
-
+/* ================= recv 回调 ================= */
 static err_t tcp_server_recv(void *arg,
                              struct tcp_pcb *pcb,
                              struct pbuf *p,
@@ -44,16 +42,13 @@ static err_t tcp_server_recv(void *arg,
 {
     tcp_session_t *s = (tcp_session_t *)arg;
 
-    if (!p)
+    /* 对端正常关闭 */
+    if (p == NULL)
     {
         tcp_close(pcb);
+        free(s);
+        g_session = NULL;
         tcp_arg(pcb, NULL);
-
-        if (s)
-        {
-            free(s);
-            g_session = NULL;
-        }
 
         osEventFlagsSet(g_netEvent, NET_EVT_CLOSE);
         return ERR_OK;
@@ -75,25 +70,26 @@ static err_t tcp_server_recv(void *arg,
     return ERR_OK;
 }
 
-/* ================= TCP ACCEPT ================= */
-
-static err_t tcp_server_sent(void *arg,
-                             struct tcp_pcb *pcb,
-                             u16_t len)
+/* ================= err 回调（唯一释放点） ================= */
+static void tcp_server_err(void *arg, err_t err)
 {
-    LWIP_UNUSED_ARG(arg);
-    LWIP_UNUSED_ARG(pcb);
-    LWIP_UNUSED_ARG(len);
-    return ERR_OK;
+    tcp_session_t *s = (tcp_session_t *)arg;
+
+    if (s)
+        free(s);
+
+    g_session = NULL;
+
+    /* 通知 NetManager 回到监听态 */
+    osEventFlagsSet(g_netEvent, NET_EVT_CLOSE);
 }
 
+/* ================= accept 回调 ================= */
 static err_t tcp_server_accept(void *arg,
                                struct tcp_pcb *pcb,
                                err_t err)
 {
-    LWIP_UNUSED_ARG(arg);
-    LWIP_UNUSED_ARG(err);
-
+    /* 只允许一个连接 */
     if (g_session)
     {
         tcp_abort(pcb);
@@ -102,32 +98,32 @@ static err_t tcp_server_accept(void *arg,
 
     tcp_session_t *s = malloc(sizeof(tcp_session_t));
     if (!s)
-    {
-        tcp_abort(pcb);
-        return ERR_ABRT;
-    }
+        return ERR_MEM;
 
     memset(s, 0, sizeof(*s));
     s->pcb = pcb;
     s->connected = true;
     s->last_rx_time = g_ms_tick;
     s->last_tx_time = g_ms_tick;
+
     g_session = s;
 
     tcp_arg(pcb, s);
     tcp_recv(pcb, tcp_server_recv);
-    tcp_sent(pcb, tcp_server_sent);
     tcp_err(pcb, tcp_server_err);
 
-    tcp_setprio(pcb, TCP_PRIO_NORMAL);
-
+    /* 开启KeepAlive */
     pcb->so_options |= SOF_KEEPALIVE;
 
+    pcb->keep_idle = TCP_KEEPIDLE_DEFAULT;   // 60s
+    pcb->keep_intvl = TCP_KEEPINTVL_DEFAULT; // 10s
+    pcb->keep_cnt = TCP_KEEPCNT_DEFAULT;
+
+    NetMgr_OnConnected();
     return ERR_OK;
 }
 
-/* ================= TCP INIT ================= */
-
+/* ================= Server Init ================= */
 void TCP_Server_Init(void)
 {
     struct tcp_pcb *pcb = tcp_new();
@@ -144,7 +140,7 @@ void TCP_Server_Init(void)
     tcp_accept(pcb, tcp_server_accept);
 }
 
-/* ================= SEND（线程安全） ================= */
+/* ================= Net_Send ================= */
 
 typedef struct
 {
@@ -157,7 +153,10 @@ static void net_send_cb(void *arg)
 {
     net_send_ctx_t *ctx = (net_send_ctx_t *)arg;
 
-    if (ctx && ctx->pcb)
+    if (ctx && ctx->pcb &&
+        g_session &&
+        g_session->pcb == ctx->pcb &&
+        g_session->connected)
     {
         if (tcp_write(ctx->pcb,
                       ctx->data,
@@ -177,7 +176,10 @@ static void net_send_cb(void *arg)
 
 bool Net_Send(const uint8_t *buf, uint16_t len)
 {
-    if (!g_session || !g_session->connected || len == 0)
+    if (!buf || len == 0)
+        return false;
+
+    if (!g_session || !g_session->connected || !g_session->pcb)
         return false;
 
     net_send_ctx_t *ctx = malloc(sizeof(net_send_ctx_t));
@@ -206,62 +208,32 @@ bool Net_Send(const uint8_t *buf, uint16_t len)
     return true;
 }
 
-u8 F407_IP[4] = {0};
-u8 F407_NETMASK[4] = {0};
-u8 F407_WG[4] = {0};
-u16 F407_PORT = 10028;
-u8 F407_MAC[6] = {0};
 void PowerOnIpSet(void)
 {
-    u32 sn0 = 0;
-    u8 temoIPFlag[20] = {0};
-    u8 IP_CHECK_MSG[6] = "setip";
-    sn0 = *(vu32 *)(0x1FFF7A10); // 获取STM32的唯一ID的前24位作为MAC地址后三字节
+    uint32_t sn0 = 0;
+    NET_Parameter_t net_param_tmp = {0};
+    uint8_t IP_CHECK_MSG[6] = "setip";
+    sn0 = *(__IO uint32_t *)(0x1FFF7A10); // 获取STM32的唯一ID的前24位作为MAC地址后三字节
     // MAC地址设置(高三字节固定为:2.0.0,低三字节用STM32唯一ID)
-    F407_MAC[0] = 0xD0; // 高三字节(IEEE称之为组织唯一ID,OUI)地址固定为:2.0.0
-    F407_MAC[1] = 0xE0; // 高三位是苹果电脑的MAC地址
-    F407_MAC[2] = 0x40;
-    F407_MAC[3] = (sn0 >> 16) & 0XFF; // 低三字节用STM32的唯一ID
-    F407_MAC[4] = (sn0 >> 8) & 0XFFF;
-    F407_MAC[5] = sn0 & 0XFF;
+    net_param.MAC[0] = 0xD0; // 高三字节(IEEE称之为组织唯一ID,OUI)地址固定为:2.0.0
+    net_param.MAC[1] = 0xE0; // 高三位是苹果电脑的MAC地址
+    net_param.MAC[2] = 0x40;
+    net_param.MAC[3] = (sn0 >> 16) & 0XFF; // 低三字节用STM32的唯一ID
+    net_param.MAC[4] = (sn0 >> 8) & 0XFFF;
+    net_param.MAC[5] = sn0 & 0XFF;
 
-    BSP_W25Qx_ReadDMA(&hw25q64, temoIPFlag, IPADDR, 20);
-    if (memcmp(temoIPFlag, IP_CHECK_MSG, 5) == 0)
+    // 更改为flash
+    W25Q256_Read(W25QXXIPADDR, (uint8_t *)&net_param_tmp, sizeof(NET_Parameter_t));
+
+    if (memcmp(net_param_tmp.MAGIC, IP_CHECK_MSG, 5) == 0)
     {
-        F407_IP[0] = temoIPFlag[5];
-        F407_IP[1] = temoIPFlag[6];
-        F407_IP[2] = temoIPFlag[7];
-        F407_IP[3] = temoIPFlag[8];
-
-        F407_NETMASK[0] = temoIPFlag[9];
-        F407_NETMASK[1] = temoIPFlag[10];
-        F407_NETMASK[2] = temoIPFlag[11];
-        F407_NETMASK[3] = temoIPFlag[12];
-
-        F407_WG[0] = temoIPFlag[13];
-        F407_WG[1] = temoIPFlag[14];
-        F407_WG[2] = temoIPFlag[15];
-        F407_WG[3] = temoIPFlag[16];
-
-        F407_PORT = (temoIPFlag[17] << 8) + temoIPFlag[18];
+        Git_info_To_mainAPP(&net_param_tmp);
+        memcpy(&net_param, &net_param_tmp, sizeof(NET_Parameter_t));
     }
     else
     {
-        F407_IP[0] = 192;
-        F407_IP[1] = 168;
-        F407_IP[2] = 1;
-        F407_IP[3] = 220;
-
-        F407_NETMASK[0] = 255;
-        F407_NETMASK[1] = 255;
-        F407_NETMASK[2] = 255;
-        F407_NETMASK[3] = 0;
-
-        F407_WG[0] = 192;
-        F407_WG[1] = 168;
-        F407_WG[2] = 1;
-        F407_WG[3] = 1;
-
-        F407_PORT = 10028;
+        Git_info_To_mainAPP(&net_param);
+        memcpy(&net_param.MAGIC, IP_CHECK_MSG, 6);
+        W25Q256_WriteAutoErase(W25QXXIPADDR, (uint8_t *)&net_param, sizeof(NET_Parameter_t));
     }
 }

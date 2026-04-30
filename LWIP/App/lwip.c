@@ -29,7 +29,10 @@
 #include <string.h>
 
 /* USER CODE BEGIN 0 */
-#include "dp83848.h"
+#include "FreeRTOS.h"
+#include "cmsis_os2.h"
+#include "net_manager.h"
+#include "tcp_server.h"
 /* USER CODE END 0 */
 /* Private function prototypes -----------------------------------------------*/
 static void ethernet_link_status_updated(struct netif *netif);
@@ -54,11 +57,7 @@ osThreadAttr_t attributes;
 /* USER CODE END OS_THREAD_ATTR_CMSIS_RTOS_V2 */
 
 /* USER CODE BEGIN 2 */
-extern u8 F407_IP[4];
-extern u8 F407_NETMASK[4];
-extern u8 F407_WG[4];
-extern u16 F407_PORT;
-extern u8 F407_MAC[6];
+
 /* USER CODE END 2 */
 
 /**
@@ -81,18 +80,10 @@ void MX_LWIP_Init(void)
     GATEWAY_ADDRESS[3] = 1;
 
     /* USER CODE BEGIN IP_ADDRESSES */
-    IP_ADDRESS[0] = F407_IP[0];
-    IP_ADDRESS[1] = F407_IP[1];
-    IP_ADDRESS[2] = F407_IP[2];
-    IP_ADDRESS[3] = F407_IP[3];
-    NETMASK_ADDRESS[0] = F407_NETMASK[0];
-    NETMASK_ADDRESS[1] = F407_NETMASK[1];
-    NETMASK_ADDRESS[2] = F407_NETMASK[2];
-    NETMASK_ADDRESS[3] = F407_NETMASK[3];
-    GATEWAY_ADDRESS[0] = F407_WG[0];
-    GATEWAY_ADDRESS[1] = F407_WG[1];
-    GATEWAY_ADDRESS[2] = F407_WG[2];
-    GATEWAY_ADDRESS[3] = F407_WG[3];
+    HAL_Delay(1000);
+    memcpy(IP_ADDRESS, net_param.IP, sizeof(ipaddr.addr));
+    memcpy(NETMASK_ADDRESS, net_param.NETMASK, sizeof(netmask.addr));
+    memcpy(GATEWAY_ADDRESS, net_param.WG, sizeof(gw.addr));
     /* USER CODE END IP_ADDRESSES */
 
     /* Initialize the LwIP stack with RTOS */
@@ -146,11 +137,13 @@ static void ethernet_link_status_updated(struct netif *netif)
     if (netif_is_up(netif))
     {
         /* USER CODE BEGIN 5 */
+        osEventFlagsSet(g_netEvent, NET_EVT_LINK_UP);
         /* USER CODE END 5 */
     }
     else /* netif is down */
     {
         /* USER CODE BEGIN 6 */
+        osEventFlagsSet(g_netEvent, NET_EVT_LINK_DOWN);
         /* USER CODE END 6 */
     }
 }

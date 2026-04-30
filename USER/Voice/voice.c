@@ -4,8 +4,6 @@
 #include "usart.h"
 #include <string.h>
 
-static osMessageQueueId_t voiceQueue;
-
 u8 Frame_Info[512] = {0};
 
 /**
@@ -24,31 +22,16 @@ void TxVoce(u8 *inbuf, u16 len)
     RS232_Send(RS232_PORT_USART6, Frame_Info, 5 + len);
 }
 
-void Voice_Task(void *argument)
+void Voice_Send(uint8_t *data, uint16_t len)
 {
-    voiceQueue = osMessageQueueNew(4, sizeof(voice_msg_t), NULL);
-
-    voice_msg_t msg;
+    voice_msg_t msg = {0};
     uint8_t vol_cmd[4] = {0x5B, 0x76, 0x30, 0x5D};
 
-    for (;;)
-    {
-        if (osMessageQueueGet(voiceQueue, &msg, NULL, osWaitForever) == osOK)
-        {
-            vol_cmd[2] = msg.volume + 0x31;
-            TxVoce(vol_cmd, 4);
+    vol_cmd[2] = msg.volume + 0x31;
+    TxVoce(vol_cmd, 4);
 
-            osDelay(500);
+    osDelay(100);
+    memcpy(msg.data, data, len);
 
-            TxVoce(msg.data, msg.len);
-        }
-    }
-}
-
-bool Voice_SendRequest(const voice_msg_t *msg)
-{
-    if (voiceQueue == NULL)
-        return false;
-
-    return (osMessageQueuePut(voiceQueue, msg, 0, 0) == osOK);
+    TxVoce(msg.data, msg.len);
 }

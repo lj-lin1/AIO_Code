@@ -13,6 +13,6 @@ typedef struct
     uint16_t len;
 } voice_msg_t;
 
-bool Voice_SendRequest(const voice_msg_t *msg);
+void Voice_Send(uint8_t *data, uint16_t len);
 
 #endif

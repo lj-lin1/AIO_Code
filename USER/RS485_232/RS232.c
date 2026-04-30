@@ -2,7 +2,6 @@
 #include "cmd.h"
 #include <string.h>
 
-
 /* ================= 外部 UART 句柄 ================= */
 
 extern UART_HandleTypeDef huart3;
@@ -91,21 +90,15 @@ void RS232_Task(void *argument)
                 if (i == RS232_PORT_USART3)
                 {
                     /* USART3 协议 */
-                    RS232_Send(RS232_PORT_USART3, rs232_ports[i].frame_buf, len);
-                    cmd_check(rs232_ports[i].frame_buf, len);
-                    memset(rs232_ports[i].frame_buf, 0, len);
                 }
                 else if (i == RS232_PORT_USART6)
                 {
                     /* USART6 协议 */
-                    RS232_Send(RS232_PORT_USART6, rs232_ports[i].frame_buf, len);
-                    cmd_check(rs232_ports[i].frame_buf, len);
-                    memset(rs232_ports[i].frame_buf, 0, len);
                 }
             }
         }
 
-        osDelay(1);
+        osDelay(5);
     }
 }
 

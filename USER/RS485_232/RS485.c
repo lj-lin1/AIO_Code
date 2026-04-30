@@ -1,6 +1,12 @@
 #include "rs485.h"
-#include <string.h>
+#include "Motor.h"
+#include "RingBuffer.h"
 #include "cmd.h"
+#include <string.h>
+
+/* ================= 全局缓冲区 ================= */
+
+RingBuffer RS485_BUFFER = {0};
 
 /* ================= 外部句柄 ================= */
 
@@ -88,11 +94,10 @@ void RS485_Task(void *argument)
             __HAL_DMA_DISABLE_IT(RS485_UART.hdmarx, DMA_IT_HT);
 
             /* ================= 协议解析区 ================= */
-            /* rs485_frame_buf[0..len-1] */
-            /* 例如：
-               Modbus_RTU_Parse(rs485_frame_buf, len);
-            */
+            RB_PutByte_Bulk(&RS485_BUFFER, rs485_frame_buf, len);
+            osSemaphoreRelease(MotorData_Semaphore);
         }
+        osDelay(5);
     }
 }
 

@@ -1,134 +1,182 @@
 /**
  ******************************************************************************
- * @file    cmd.c
- * @brief   åè®®å‘½ä»¤å¤„ç†ä¸è®¾å¤‡æ§åˆ¶
+ * @file    app_cmd.c
+ * @brief   Ğ­ÒéÃüÁî´¦ÀíÓëÉè±¸¿ØÖÆ
+ * @brief   Ğ­Òé:´´µÏÒ»Ìå»úĞ­Òé
  *
- * åŠŸèƒ½è¯´æ˜ï¼š
- *  1. æ˜¾ç¤ºã€æ¸…å±ã€äº®åº¦ã€å­—ä½“æ§åˆ¶
- *  2. é€šè¡Œç¯ã€é»„é—ªã€å…¨å±ç‚¹äº®
- *  3. IP/ç«¯å£é…ç½®ä¸ Flash ä¿å­˜
- *  4. è¯­éŸ³æ’­æŠ¥æ§åˆ¶
- *  5. APP / IAP ç½‘ç»œåè®®è§£æ
- *  6. ç½‘ç»œç¯å½¢ç¼“å†²åŒºæ•°æ®å¤„ç†
+ * ¹¦ÄÜËµÃ÷£º
+ *  1. ÏÔÊ¾¡¢ÇåÆÁ¡¢ÁÁ¶È¡¢×ÖÌå¿ØÖÆ
+ *  2. Í¨ĞĞµÆ¡¢»ÆÉÁ¡¢È«ÆÁµãÁÁ
+ *  3. IP/¶Ë¿ÚÅäÖÃÓë Flash ±£´æ
+ *  4. ÓïÒô²¥±¨¿ØÖÆ
+ *  5. APP / IAP ÍøÂçĞ­Òé½âÎö
+ *  6. ÍøÂç»·ĞÎ»º³åÇøÊı¾İ´¦Àí
  *
  ******************************************************************************
  */
 
 #include "cmd.h"
+#include "Motor.h"
 #include "RS232.h"
+#include "RingBuffer.h"
+#include "cmsis_os2.h"
 #include "display.h"
-#include "func.h"
-#include "stdbool.h"
-#include "stdint.h"
+#include "flash.h"
+#include "iap_cmd.h"
+#include "render.h"
 #include "string.h"
 #include "tcp_server.h"
 #include "voice.h"
 #include "w25qxx.h"
 
-extern u8 lightLev; // äº®åº¦ç­‰çº§
+extern volatile uint8_t light_level;      // ÁÁ¶ÈµÈ¼¶
+const char product_info[] = {"V1.0.0.0"}; // ²úÆ·ĞÅÏ¢
+
+extern RingBuffer netRecvBuf; // ÍøÂç½ÓÊÕ»º³åÇø
+
+osSemaphoreId_t netRxSem;
 
 /*==============================================================================
- * é€šç”¨å‘½ä»¤åº”ç­”
+ * Í¨ÓÃÃüÁîÓ¦´ğ
  *============================================================================*/
 
 /**
- * @brief  æ ¹æ®å½“å‰é€šä¿¡ç«¯å£è¿”å›åº”ç­”æ•°æ®
+ * @brief  ¸ù¾İµ±Ç°Í¨ĞÅ¶Ë¿Ú·µ»ØÓ¦´ğÊı¾İ
  */
-void cmdnack(u8 *inbuf, u16 len)
+void cmdnack(uint8_t *inbuf, uint16_t len)
 {
+    // È±ÉÙÍøÂç·µ»Ø½Ó¿Ú£¬ÀıÈç£ºNet_Send(inbuf, len);
     Net_Send(inbuf, len);
 }
 
+/**
+ * @brief  ¼ÆËãÒì»òĞ£Ñé
+ * @param  buf Êı¾İÆğÊ¼µØÖ·
+ * @param  len ĞèÒªÒì»òµÄ×Ö½ÚÊı
+ * @return Òì»òĞ£Ñé½á¹û
+ */
+uint8_t xorCheck(uint8_t *buf, uint16_t len)
+{
+    uint8_t xor = 0;
+    for (uint16_t i = 0; i < len; i++)
+    {
+        xor ^= buf[i];
+    }
+    return xor;
+}
+
 /*==============================================================================
- * æ˜¾ç¤ºä¸æ¸…å±æ§åˆ¶
+ * ÏÔÊ¾ÓëÇåÆÁ¿ØÖÆ
  *============================================================================*/
 
 /**
- * @brief  æ˜¾ç¤ºæ§åˆ¶ï¼ˆå…¨å± / å•è¡Œï¼‰
+ * @brief  ÏÔÊ¾¿ØÖÆ£¨È«ÆÁ / µ¥ĞĞ£©
  */
-void cmd_disPlayAll_ctrl(u8 *inbuf, u16 len)
+void cmd_disPlayAll_ctrl(uint8_t *inbuf, uint16_t len)
 {
-    u8 ZTColor = RED;
-
-    if (inbuf[6] <= 2)
+    u8 ZTColor = 1;
+    if (inbuf[6] <= 2) // ÅĞ¶Ï×ÖÌåÑÕÉ«
     {
         ZTColor = inbuf[6] + 1;
     }
     else
-    {
-        ZTColor = RED;
-    }
-
+        ZTColor = red;
     fontColor = ZTColor;
 
     if (inbuf[5] < 3)
     {
-        fontSize = inbuf[5];
+        fontSize = inbuf[5] + 1; // ÅĞ¶Ï×ÖÌå´óĞ¡(¼ÓÒ»Ô­ÒòÊÇ±¾Éè±¸²»ÓÃ14ºÅ×ÖÌå)
     }
     else
+        fontSize = font_16;
+
+    uint32_t row_offset = 0;
+    switch (inbuf[5] + 1)
     {
-        fontSize = FONT16;
+    case font_16:
+        row_offset = font16;
+        break;
+    case font_20:
+        row_offset = font20;
+        break;
+    case font_24:
+        row_offset = font24;
+        break;
+    default:
+        row_offset = font16;
+        break;
     }
 
-    if (inbuf[4] == 0x00)
+    if (inbuf[4] == 0x00) // È«ÆÁ
     {
-        app_funcs_makefonttolatt_all(&inbuf[7], len - 9, 0, 0, ZTColor);
+        RenderString(0, 0, &inbuf[7], len - 9, (DispColor_t)fontColor, (FontSize_t)fontSize, (FontType_t)fontType, true);
     }
-    else if (inbuf[4] <= 17)
+    else if (inbuf[4] <= 17) // µ¥ĞĞ
     {
-        app_funcs_makefonttolatt_oneline(&inbuf[7], len - 9, 0, 0,
-                                         inbuf[4] - 1, ZTColor);
+        RenderString(0, (inbuf[4] - 1) * row_offset, &inbuf[7], len - 9, (DispColor_t)fontColor, (FontSize_t)fontSize, (FontType_t)fontType, false);
     }
-
     cmdnack(inbuf, len);
 }
 
 /**
- * @brief  æ¸…å±æ§åˆ¶
+ * @brief  ÇåÆÁ¿ØÖÆ
  */
-void cmd_clear_ctrl(u8 *inbuf, u16 len)
+void cmd_clear_ctrl(uint8_t *inbuf, uint16_t len)
 {
-    if (inbuf[4] == 0x00)
+    if (inbuf[4] == 0x00) // È«ÆÁ
     {
-        app_funcs_clear(255);
+        Disp_Fill(black, 0);
     }
-    else if (inbuf[4] <= 17)
+    else if (inbuf[4] <= 17) // µ¥ĞĞ
     {
-        app_funcs_clear(inbuf[4] - 1);
+        switch (fontSize)
+        {
+        case font_16:
+            Disp_Fill(black, font16 * (inbuf[4] - 1) * SCREEN_PIXEL_ROW);
+            break;
+        case font_20:
+            Disp_Fill(black, font20 * (inbuf[4] - 1) * SCREEN_PIXEL_ROW);
+            break;
+        case font_24:
+            Disp_Fill(black, font24 * (inbuf[4] - 1) * SCREEN_PIXEL_ROW);
+            break;
+        default:
+            Disp_Fill(black, 0);
+            break;
+        }
     }
-
     cmdnack(inbuf, len);
 }
 
 /*==============================================================================
- * äº®åº¦æ§åˆ¶
+ * ÁÁ¶È¿ØÖÆ
  *============================================================================*/
 
 /**
- * @brief  äº®åº¦è®¾ç½®ï¼ˆ1~8 çº§ï¼‰
+ * @brief  ÁÁ¶ÈÉèÖÃ£¨1~8 ¼¶£©
  */
-void cmd_setLight_ctrl(u8 *inbuf, u16 len)
+void cmd_setLight_ctrl(uint8_t *inbuf, uint16_t len)
 {
     if ((inbuf[4] > 0) && (inbuf[4] <= 8))
     {
-        lightLev = inbuf[4];
+        light_level = inbuf[4];
     }
 
     cmdnack(inbuf, len);
 
-    u8 LIGHT_CHECK_MSG[9] = "setlight";
-    BSP_W25Qx_EraseWrite(&hw25q64, LIGHT_CHECK_MSG, LIGHTADDR, 8);
-    BSP_W25Qx_EraseWrite(&hw25q64, &inbuf[4], LIGHTADDR + 8, 1);
+    uint8_t LIGHT_CHECK_MSG[64] = {0};
+    snprintf((char *)LIGHT_CHECK_MSG, sizeof(LIGHT_CHECK_MSG), "%s%d", "setlight", light_level);
+    // BSP_W25Qx_EraseWrite(&hw25q256, LIGHT_CHECK_MSG, LIGHTADDR, 64); // ±£´æÁÁ¶ÈµÈ¼¶µ½ Flash
 }
 
 /*==============================================================================
- * é€šè¡Œç¯ / é»„é—ªæ§åˆ¶
+ * Í¨ĞĞµÆ / »ÆÉÁ¿ØÖÆ
  *============================================================================*/
 
 /**
- * @brief  é€šè¡Œç¯æ§åˆ¶
+ * @brief  Í¨ĞĞµÆ¿ØÖÆ
  */
-void cmd_lamp_ctrl(u8 *inbuf, u16 len)
+void cmd_lamp_ctrl(uint8_t *inbuf, uint16_t len)
 {
     if (inbuf[4] == 0)
     {
@@ -139,15 +187,13 @@ void cmd_lamp_ctrl(u8 *inbuf, u16 len)
         LAMP = 1;
     }
 
-    RS232_Send(RS232_PORT_USART3, inbuf, len);
-
     cmdnack(inbuf, len);
 }
 
 /**
- * @brief  é»„é—ªæ§åˆ¶
+ * @brief  »ÆÉÁ¿ØÖÆ
  */
-void cmd_hs_ctrl(u8 *inbuf, u16 len)
+void cmd_hs_ctrl(uint8_t *inbuf, uint16_t len)
 {
     if (inbuf[4] == 0)
     {
@@ -162,99 +208,108 @@ void cmd_hs_ctrl(u8 *inbuf, u16 len)
 }
 
 /*==============================================================================
- * å…¨å±ç‚¹äº®
+ * È«ÆÁµãÁÁ
  *============================================================================*/
 
 /**
- * @brief  è®¾ç½®å…¨å±ç‚¹äº®é¢œè‰²
+ * @brief  ÉèÖÃÈ«ÆÁµãÁÁÑÕÉ«
  */
-void cmd_setfullscreen_ctrl(u8 *inbuf, u16 len)
+void cmd_setfullscreen_ctrl(uint8_t *inbuf, uint16_t len)
 {
     if (inbuf[4] == 0x00)
     {
-        app_funcs_fill(RED);
+        // È«ÆÁºì
+        Disp_Fill(red, 0);
     }
     else if (inbuf[4] == 0x01)
     {
-        app_funcs_fill(GREEN);
+        // È«ÆÁÂÌ
+        Disp_Fill(green, 0);
     }
     else if (inbuf[4] == 0x02)
     {
-        app_funcs_fill(YELLOW);
+        // È«ÆÁ»Æ
+        Disp_Fill(yellow, 0);
     }
 
     cmdnack(inbuf, len);
 }
 
 /*==============================================================================
- * å­—ä½“è®¾ç½®
+ * ×ÖÌåÉèÖÃ
  *============================================================================*/
 
 /**
- * @brief  ä¿å­˜å­—ä½“å¤§å°ä¸ç±»å‹
+ * @brief  ±£´æ×ÖÌå´óĞ¡ÓëÀàĞÍ
  */
-void cmd_setfontsize_ctrl(u8 *inbuf, u16 len)
+void cmd_setfontsize_ctrl(uint8_t *inbuf, uint16_t len)
 {
-    u8 fontSizeBuf[11] = "setfontsize";
-    u8 tempFontSize = fontSize;
-    u8 tempFontType = fontType;
+    uint8_t tempFontSize = fontSize;
+    uint8_t tempFontType = fontType;
 
-    BSP_W25Qx_EraseWrite(&hw25q64, fontSizeBuf, FONTSIZEADDR, 11);
-    BSP_W25Qx_EraseWrite(&hw25q64, &tempFontSize, FONTSIZEADDR + 11, 1);
-    BSP_W25Qx_EraseWrite(&hw25q64, &tempFontType, FONTSIZEADDR + 12, 1);
+    uint8_t FONT_CHECK_MSG[64] = {0};
+    snprintf((char *)FONT_CHECK_MSG, sizeof(FONT_CHECK_MSG), "%s%d%d", "setfontsize", tempFontSize, tempFontType);
+
+    // BSP_W25Qx_EraseWrite(&hw25q256, FONT_CHECK_MSG, FONTSIZEADDR, sizeof(FONT_CHECK_MSG));
 
     cmdnack(inbuf, len);
 }
 
 /*==============================================================================
- * IP è®¾ç½®
+ * IP ÉèÖÃ
  *============================================================================*/
 
 /**
- * @brief  è®¾ç½® IP / æ©ç  / ç½‘å…³ / ç«¯å£å¹¶é‡å¯
+ * @brief  ÉèÖÃ IP / ÑÚÂë / Íø¹Ø / ¶Ë¿Ú²¢ÖØÆô
  */
-void cmd_Setip_ctrl(u8 *inbuf, u16 len)
+void cmd_Setip_ctrl(uint8_t *inbuf, uint16_t len)
 {
     cmdnack(inbuf, len);
-
-    F407_IP[0] = inbuf[4];
-    F407_IP[1] = inbuf[5];
-    F407_IP[2] = inbuf[6];
-    F407_IP[3] = inbuf[7];
-
-    F407_NETMASK[0] = inbuf[8];
-    F407_NETMASK[1] = inbuf[9];
-    F407_NETMASK[2] = inbuf[10];
-    F407_NETMASK[3] = inbuf[11];
-
-    F407_WG[0] = inbuf[12];
-    F407_WG[1] = inbuf[13];
-    F407_WG[2] = inbuf[14];
-    F407_WG[3] = inbuf[15];
-
-    F407_PORT = (inbuf[16] << 8) + inbuf[17];
 
     u8 IP_CHECK_MSG[6] = "setip";
 
-    BSP_W25Qx_EraseWrite(&hw25q64, IP_CHECK_MSG, IPADDR, 5);
-    BSP_W25Qx_EraseWrite(&hw25q64, F407_IP, IPADDR + 5, 4);
-    BSP_W25Qx_EraseWrite(&hw25q64, F407_NETMASK, IPADDR + 9, 4);
-    BSP_W25Qx_EraseWrite(&hw25q64, F407_WG, IPADDR + 13, 4);
-    BSP_W25Qx_EraseWrite(&hw25q64, &inbuf[16], IPADDR + 17, 1);
-    BSP_W25Qx_EraseWrite(&hw25q64, &inbuf[17], IPADDR + 18, 1);
+    net_param.IP[0] = inbuf[4];
+    net_param.IP[1] = inbuf[5];
+    net_param.IP[2] = inbuf[6];
+    net_param.IP[3] = inbuf[7];
 
-    // osDelay(100);
-    // NVIC_SystemReset();
+    net_param.NETMASK[0] = inbuf[8];
+    net_param.NETMASK[1] = inbuf[9];
+    net_param.NETMASK[2] = inbuf[10];
+    net_param.NETMASK[3] = inbuf[11];
+
+    net_param.WG[0] = inbuf[12];
+    net_param.WG[1] = inbuf[13];
+    net_param.WG[2] = inbuf[14];
+    net_param.WG[3] = inbuf[15];
+
+    net_param.PORT = (inbuf[16] << 8) + inbuf[17];
+
+    Git_mianAPP_To_info(&net_param);
+
+    uint8_t f_buf[32] = {0};
+    W25Q256_Read(W25QXXIPADDR, f_buf, 32);
+    memcpy(f_buf, IP_CHECK_MSG, 6);
+    memcpy(f_buf + 6, net_param.IP, 4);
+    memcpy(f_buf + 10, net_param.NETMASK, 4);
+    memcpy(f_buf + 14, net_param.WG, 4);
+    memcpy(f_buf + 18, &inbuf[17], 1); // ´ó¶ËĞò
+    memcpy(f_buf + 19, &inbuf[16], 1);
+
+    W25Q256_WriteAutoErase(W25QXXIPADDR, f_buf, 32);
+
+    osDelay(500);
+    NVIC_SystemReset();
 }
 
 /*==============================================================================
- * è¯­éŸ³æ’­æŠ¥
+ * ÓïÒô²¥±¨
  *============================================================================*/
 
 /**
- * @brief  è¯­éŸ³æ’­æŠ¥æ§åˆ¶
+ * @brief  ÓïÒô²¥±¨¿ØÖÆ
  */
-void cmd_YY_ctrl(u8 *inbuf, u16 len)
+void cmd_YY_ctrl(uint8_t *inbuf, uint16_t len)
 {
     voice_msg_t msg;
 
@@ -266,26 +321,26 @@ void cmd_YY_ctrl(u8 *inbuf, u16 len)
 
     memcpy(msg.data, &inbuf[5], msg.len);
 
-    Voice_SendRequest(&msg);
+    Voice_Send(msg.data, msg.len);
 
     cmdnack(inbuf, len);
 }
 
 /*==============================================================================
- * CRC æ ¡éªŒ
+ * CRC Ğ£Ñé
  *============================================================================*/
 
 #define CRC_POLYNOM 0x8408
 #define CRC_INIVAL 0xFFFF
 
-u16 calc_crc16(u16 init_crc, u8 *crc_data, int len)
+uint16_t calc_crc16(uint16_t init_crc, uint8_t *crc_data, int len)
 {
-    u16 crc = init_crc;
+    uint16_t crc = init_crc;
 
     for (int cnt = 0; cnt < len; cnt++)
     {
         crc ^= crc_data[cnt];
-        for (u8 k = 0; k < 8; k++)
+        for (uint8_t k = 0; k < 8; k++)
         {
             if (crc & 0x1)
                 crc = (crc >> 1) ^ CRC_POLYNOM;
@@ -298,62 +353,70 @@ u16 calc_crc16(u16 init_crc, u8 *crc_data, int len)
 }
 
 /*==============================================================================
- * å‘½ä»¤ç¼–å·è§£æ
+ * ÃüÁî±àºÅ½âÎö
  *============================================================================*/
 
 /**
- * @brief  æ ¹æ®åè®®å‘½ä»¤å­—è·å–å‘½ä»¤ç´¢å¼•
- * @param  cmdstr åè®®ä¸­çš„å‘½ä»¤ç 
- * @return å‘½ä»¤å‡½æ•°è¡¨ç´¢å¼•ï¼Œ255 è¡¨ç¤ºæ— æ•ˆå‘½ä»¤
+ * @brief  ¸ù¾İĞ­ÒéÃüÁî×Ö»ñÈ¡ÃüÁîË÷Òı
+ * @param  cmdstr Ğ­ÒéÖĞµÄÃüÁîÂë
+ * @return ÃüÁîº¯Êı±íË÷Òı£¬255 ±íÊ¾ÎŞĞ§ÃüÁî
  */
-u8 getCmdNo(u8 cmdstr)
+uint8_t getCmdNo(uint8_t cmdstr)
 {
-    u8 tempCmd;
+    uint8_t tempCmd;
 
     switch (cmdstr)
     {
-    case 0x80: /* æ˜¾ç¤º */
+    case 0x80: /* ÏÔÊ¾ */
         tempCmd = 0;
         break;
 
-    case 0x94: /* æ¸…å± */
+    case 0x94: /* ÇåÆÁ */
         tempCmd = 1;
         break;
 
-    case 0x96: /* è®¾ç½®äº®åº¦ */
+    case 0x96: /* ÉèÖÃÁÁ¶È */
         tempCmd = 2;
         break;
 
-    case 0x99: /* é€šè¡Œç¯æ§åˆ¶ */
+    case 0x99: /* Í¨ĞĞµÆ¿ØÖÆ */
         tempCmd = 3;
         break;
 
-    case 0x98: /* é»„é—ªæ§åˆ¶ */
+    case 0x98: /* »ÆÉÁ¿ØÖÆ */
         tempCmd = 4;
         break;
 
-    case 0x01: /* ä¿®æ”¹ IP */
+    case 0x01: /* ĞŞ¸Ä IP */
         tempCmd = 5;
         break;
 
-    case 0x03: /* å…¨å±ç‚¹äº® */
+    case 0x03: /* È«ÆÁµãÁÁ */
         tempCmd = 6;
         break;
 
-    case 0x04: /* è·å–ç‰ˆæœ¬å· */
+    case 0x04: /* »ñÈ¡°æ±¾ºÅ */
         tempCmd = 7;
         break;
 
-    case 0x05: /* è®¾ç½®å­—ä½“å¤§å°ã€ç±»å‹ */
+    case 0x05: /* ÉèÖÃ×ÖÌå´óĞ¡¡¢ÀàĞÍ */
         tempCmd = 8;
         break;
 
-    case 0x06: /* è¯­éŸ³æ’­æŠ¥ */
+    case 0x06: /* ÓïÒô²¥±¨ */
         tempCmd = 9;
         break;
 
-    case 0x08: /* è®¾å¤‡å¤ä½ */
-        tempCmd = 10;
+    case 0x07: /* À¸¸Ë¿ØÖÆ */
+        tempCmd = 11;
+        break;
+
+    case 0x08: /* Éè±¸¸´Î» */
+        tempCmd = 11;
+        break;
+
+    case 0x10: /* »ñÈ¡À¸¸Ë×´Ì¬ */
+        tempCmd = 12;
         break;
 
     default:
@@ -364,244 +427,201 @@ u8 getCmdNo(u8 cmdstr)
     return tempCmd;
 }
 
-/*==============================================================================
- * è¯­éŸ³æ’­æŠ¥
- *============================================================================*/
-
 /**
- * @brief  è·å–è®¾å¤‡ç‰ˆæœ¬å·
+ * @brief  »ñÈ¡Éè±¸°æ±¾ºÅ
  */
-
-void cmd_getedition_ctrl(u8 *inbuf, u16 len)
+void cmd_getedition_ctrl(uint8_t *inbuf, uint16_t len)
 {
+    uint8_t rebuff[128] = {0};
+    rebuff[0] = 0xFF;
+    rebuff[1] = 6 + strlen(product_info);
+    rebuff[2] = 0x04;
+    rebuff[3] = 0x00;
+    memcpy(&rebuff[4], product_info, strlen(product_info));
+    rebuff[4 + strlen(product_info)] = xorCheck(rebuff, 4 + strlen(product_info));
+    rebuff[4 + strlen(product_info) + 1] = 0xFF;
+
+    // ÍøÂç·¢ËÍ
+    cmdnack(rebuff, 4 + strlen(product_info) + 2);
 }
 
-/*==============================================================================
- * è¯­éŸ³æ’­æŠ¥
- *============================================================================*/
-
 /**
- * @brief  è®¾å¤‡å¤ä½
+ * @brief  Éè±¸¸´Î»
  */
-
-void cmd_reset_ctrl(u8 *inbuf, u16 len)
+void cmd_reset_ctrl(uint8_t *inbuf, uint16_t len)
 {
     NVIC_SystemReset();
 }
 
+/**
+ * @brief  À¸¸Ë¿ØÖÆ
+ */
+void cmd_motor_ctrl(uint8_t *inbuf, uint16_t len)
+{
+    MoData_msg_t msg = {0};
+    OS_MessageQueueClear(MotorData_Queue, &msg, sizeof(MoData_msg_t));
+    if (inbuf[4] == 0x00) // Âä¸Ë
+        osEventFlagsSet(MotorCtrl_Event, Motor_DOWN);
+    else if (inbuf[4] == 0x01) // Ì§¸Ë
+        osEventFlagsSet(MotorCtrl_Event, Motor_UP);
+}
+
+static const uint8_t cmd_motor_up[7] = {0xff, 0x07, 0x08, 0x00, 0x01, 0xf1, 0xff};
+static const uint8_t cmd_motor_down[7] = {0xff, 0x07, 0x08, 0x00, 0x00, 0xf0, 0xff};
+
+void motor_Response(MoStatus_t status)
+{
+    uint8_t rebuff[32] = {0};
+    if (status == Motor_Status_UP)
+        memcpy(rebuff, cmd_motor_up, 7);
+    else if (status == Motor_Status_DOWN)
+        memcpy(rebuff, cmd_motor_down, 7);
+
+    cmdnack(rebuff, 7);
+}
+
+static const uint8_t get_re_up[7] = {0xff, 0x07, 0x10, 0x00, 0x01, 0xe9, 0xff};
+static const uint8_t get_re_down[7] = {0xff, 0x07, 0x10, 0x00, 0x00, 0xe8, 0xff};
+
+/*
+ * @brief  »ñÈ¡À¸¸Ë×´Ì¬
+ */
+void cmd_motor_get_status(uint8_t *inbuf, uint16_t len)
+{
+    MoData_msg_t msg = {0};
+    OS_MessageQueueClear(MotorData_Queue, &msg, sizeof(MoStatus_t));
+    uint8_t rebuff[32] = {0};
+    uint8_t status = MOGetStatus();
+    if (status == 0x01)
+        memcpy(rebuff, get_re_up, 7);
+    else if (status == 0x00)
+        memcpy(rebuff, get_re_down, 7);
+
+    cmdnack(rebuff, 7);
+}
+
 /*==============================================================================
- * å‘½ä»¤å‡½æ•°è¡¨
+ * ÃüÁîº¯Êı±í
  *============================================================================*/
 
 /**
- * @brief  å‘½ä»¤å¤„ç†å‡½æ•°æŒ‡é’ˆè¡¨
- *         ç´¢å¼•å€¼ç”± getCmdNo() è¿”å›
+ * @brief  ÃüÁî´¦Àíº¯ÊıÖ¸Õë±í
+ *         Ë÷ÒıÖµÓÉ getCmdNo() ·µ»Ø
  */
-void (*cmd_functions[24])(u8 *inbuf, u16 len) =
+void (*cmd_functions[24])(uint8_t *inbuf, uint16_t len) =
     {
-        cmd_disPlayAll_ctrl,    /* 0 æ˜¾ç¤º */
-        cmd_clear_ctrl,         /* 1 æ¸…å± */
-        cmd_setLight_ctrl,      /* 2 è®¾ç½®äº®åº¦ */
-        cmd_lamp_ctrl,          /* 3 é€šè¡Œç¯æ§åˆ¶ */
-        cmd_hs_ctrl,            /* 4 é»„é—ªæ§åˆ¶ */
-        cmd_Setip_ctrl,         /* 5 ä¿®æ”¹ IP */
-        cmd_setfullscreen_ctrl, /* 6 å…¨å±ç‚¹äº® */
-        cmd_getedition_ctrl,    /* 7 è·å–ç‰ˆæœ¬å· */
-        cmd_setfontsize_ctrl,   /* 8 è®¾ç½®å­—ä½“ */
-        cmd_YY_ctrl,            /* 9 è¯­éŸ³æ’­æŠ¥ */
-        cmd_reset_ctrl          /* 10 è½¯ä»¶å¤ä½ */
+        cmd_disPlayAll_ctrl,    /* 0 ÏÔÊ¾ */
+        cmd_clear_ctrl,         /* 1 ÇåÆÁ */
+        cmd_setLight_ctrl,      /* 2 ÉèÖÃÁÁ¶È */
+        cmd_lamp_ctrl,          /* 3 Í¨ĞĞµÆ¿ØÖÆ */
+        cmd_hs_ctrl,            /* 4 »ÆÉÁ¿ØÖÆ */
+        cmd_Setip_ctrl,         /* 5 ĞŞ¸Ä IP */
+        cmd_setfullscreen_ctrl, /* 6 È«ÆÁµãÁÁ */
+        cmd_getedition_ctrl,    /* 7 »ñÈ¡°æ±¾ºÅ */
+        cmd_setfontsize_ctrl,   /* 8 ÉèÖÃ×ÖÌå */
+        cmd_YY_ctrl,            /* 9 ÓïÒô²¥±¨ */
+        cmd_reset_ctrl,         /* 10 Èí¼ş¸´Î» */
+        cmd_motor_ctrl,         /* 11 À¸¸Ë¿ØÖÆ */
+        cmd_motor_get_status,   /* 12 »ñÈ¡À¸¸Ë×´Ì¬ */
 };
 
 /*==============================================================================
- * APP / IAP åè®®å¤„ç†(å‡çº§ç¨‹åº)
- *============================================================================*/
-
-extern u32 IPreadbuff[128];
-
-/**
- * @brief  APP å±‚ç‰¹æ®Šåè®®å¤„ç†ï¼ˆIAP / æœç´¢ / ç‰ˆæœ¬æŸ¥è¯¢ï¼‰
- */
-// void cmd_APP(u8 *appbudd)
-// {
-//     if ((appbudd[0] == 0xff) && (appbudd[1] == 0xff) &&
-//         (appbudd[2] == 0) && (appbudd[3] == 0) &&
-//         (appbudd[4] == 0) && (appbudd[5] == 0) &&
-//         (appbudd[6] == 0) && (appbudd[7] == 2))
-//     {
-//         u8 banbenbuff[] = {"ä¿¡è·¯å¨P4-120x240-3833024-V11"};
-//         u16 banbenlen = strlen((char *)banbenbuff);
-
-//         u8 TXbuff[30] =
-//             {
-//                 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F};
-
-//         /*---------------- IAP é‡å¯æŒ‡ä»¤ ----------------*/
-//         if ((appbudd[8] == 7) &&
-//             (appbudd[9] == 0x31) &&
-//             (appbudd[10] == 0x5B) &&
-//             (appbudd[11] == 0xC9))
-//         {
-//             IPreadbuff[0] = 0x49415000;
-//             IPreadbuff[1] = (F407_IP[0] << 24) |
-//                             (F407_IP[1] << 16) |
-//                             (F407_IP[2] << 8) |
-//                             (F407_IP[3]);
-//             IPreadbuff[2] = (F407_NETMASK[0] << 24) |
-//                             (F407_NETMASK[1] << 16) |
-//                             (F407_NETMASK[2] << 8) |
-//                             (F407_NETMASK[3]);
-//             IPreadbuff[3] = (F407_WG[0] << 24) |
-//                             (F407_WG[1] << 16) |
-//                             (F407_WG[2] << 8) |
-//                             (F407_WG[3]);
-//             IPreadbuff[4] = F407_PORT & 0xFFFF;
-
-//             STMFLASH_Write(0x080E0000, IPreadbuff, 128);
-
-//             TXbuff[7] = 0x02;
-//             TXbuff[8] = 0xA7;
-//             TXbuff[9] = 0x31;
-//             TXbuff[10] = 0xF4;
-//             TXbuff[11] = 0x36;
-
-//             myUdpSendDtat(TXbuff, 12);
-//             delay_ms(100);
-//             NVIC_SystemReset();
-//         }
-//         /*---------------- IP æœç´¢ ----------------*/
-//         else if ((appbudd[8] == 5) &&
-//                  (appbudd[9] == 0) &&
-//                  (appbudd[10] == 0x48) &&
-//                  (appbudd[11] == 0x73))
-//         {
-//             TXbuff[7] = 0x0F;
-//             TXbuff[8] = 0xA5;
-
-//             TXbuff[9] = F407_IP[0];
-//             TXbuff[10] = F407_IP[1];
-//             TXbuff[11] = F407_IP[2];
-//             TXbuff[12] = F407_IP[3];
-
-//             TXbuff[13] = F407_NETMASK[0];
-//             TXbuff[14] = F407_NETMASK[1];
-//             TXbuff[15] = F407_NETMASK[2];
-//             TXbuff[16] = F407_NETMASK[3];
-
-//             TXbuff[17] = F407_WG[0];
-//             TXbuff[18] = F407_WG[1];
-//             TXbuff[19] = F407_WG[2];
-//             TXbuff[20] = F407_WG[3];
-
-//             TXbuff[21] = 0x27;
-//             TXbuff[22] = 0x1B;
-
-//             u16 CRC1 = calc_crc16(0xFFFF,
-//                                   &TXbuff[ringbuffer.headPosition + 2],
-//                                   21);
-//             TXbuff[23] = CRC1 >> 8;
-//             TXbuff[24] = CRC1;
-
-//             myUdpSendDtatBroadcast(TXbuff, 25);
-//         }
-//         /*---------------- ç‰ˆæœ¬æŸ¥è¯¢ ----------------*/
-//         else if ((appbudd[8] == 0) &&
-//                  (appbudd[9] == 0) &&
-//                  (appbudd[10] == 0x36) &&
-//                  (appbudd[11] == 0xCB))
-//         {
-//             TXbuff[7] = banbenlen + 1;
-//             TXbuff[8] = 0xA0;
-
-//             for (u16 k = 0; k < banbenlen; k++)
-//             {
-//                 TXbuff[9 + k] = banbenbuff[k];
-//             }
-
-//             u16 CRC1 = calc_crc16(0xFFFF,
-//                                   &TXbuff[ringbuffer.headPosition + 2],
-//                                   banbenlen + 7);
-//             TXbuff[banbenlen + 9] = CRC1 >> 8;
-//             TXbuff[banbenlen + 10] = CRC1;
-
-//             myUdpSendDtat(TXbuff, banbenlen + 11);
-//         }
-//     }
-// }
-
-/*==============================================================================
- * RTOS ç‰ˆåè®®è§£æå…¥å£
+ * RTOS °æĞ­Òé½âÎöÈë¿Ú
  *============================================================================*/
 
 /**
- * @brief  è®¡ç®—å¼‚æˆ–æ ¡éªŒ
- * @param  buf æ•°æ®èµ·å§‹åœ°å€
- * @param  len éœ€è¦å¼‚æˆ–çš„å­—èŠ‚æ•°
- * @return å¼‚æˆ–æ ¡éªŒç»“æœ
+ * @brief  Ğ­ÒéÊı¾İ½âÎö£¨Ö§³ÖÕ³°ü / ·Ö°ü£©
  */
-uint8_t xorCheck(uint8_t *buf, uint16_t len)
+void Net_CmdHandler(void)
 {
-    uint8_t xor = 0;
-    for (uint16_t i = 0; i < len; i++)
+    uint16_t available = 0;
+
+    /* Ñ­»·´¦ÀíËùÓĞ¿É½âÎöÊı¾İ */
+    while (1)
     {
-        xor ^= buf[i];
-    }
-    return xor;
-}
+        osDelay(1);
+        available = RB_GetAvailable(&netRecvBuf);
 
-/**
- * @brief  åè®®æ•°æ®è§£æï¼ˆæ”¯æŒç²˜åŒ… / åˆ†åŒ…ï¼‰
- * @note   ç”± Net_HandleRx() è°ƒç”¨
- */
-void cmd_check(uint8_t *buf, uint16_t len)
-{
-    static uint8_t frameBuf[512] = {0};
-    static uint16_t frameLen = 0;
-
-    /* æ•°æ®æ‹¼æ¥ */
-    if (frameLen + len > sizeof(frameBuf))
-    {
-        frameLen = 0;
-        return;
-    }
-
-    memcpy(&frameBuf[frameLen], buf, len);
-    frameLen += len;
-
-    while (frameLen >= 6)
-    {
-        /* å¸§å¤´ */
-        if (frameBuf[0] != 0xFF)
-        {
-            memmove(frameBuf, frameBuf + 1, --frameLen);
-            continue;
-        }
-
-        uint16_t pktLen = frameBuf[1];
-
-        if (pktLen > frameLen)
+        /* ÖÁÉÙĞèÒª×îĞ¡Ö¡³¤¶È */
+        if (available < 6)
             break;
 
-        /* å¸§å°¾ */
-        if (frameBuf[pktLen - 1] != 0xFF)
+        uint8_t head;
+
+        /* ²éÕÒÖ¡Í· 0xFF */
+        if (!RB_PeekByte(&netRecvBuf, 0, &head))
+            break;
+
+        if (head != 0xFF)
         {
-            memmove(frameBuf, frameBuf + 1, --frameLen);
+            /* ¶ªÆúÒ»¸ö×Ö½Ú¼ÌĞøÕÒ */
+            RB_SkipBytes(&netRecvBuf, 1);
             continue;
         }
 
-        uint8_t recvXor = frameBuf[pktLen - 2];
-        uint8_t calcXor = xorCheck(frameBuf, pktLen - 2);
+        /* ¶ÁÈ¡³¤¶È×Ö¶Î */
+        uint8_t pktLen;
+        if (!RB_PeekByte(&netRecvBuf, 1, &pktLen))
+            break;
+
+        /* ³¤¶ÈºÏ·¨ĞÔ±£»¤ */
+        if (pktLen < 6 || pktLen > 512)
+        {
+            /* ·Ç·¨Ö¡£¬¶ªÆúÖ¡Í· */
+            RB_SkipBytes(&netRecvBuf, 1);
+            continue;
+        }
+
+        /* Êı¾İ»¹²»ÍêÕû */
+        if (available < pktLen)
+            break;
+
+        /* ¼ì²éÖ¡Î² */
+        uint8_t tail;
+        RB_PeekByte(&netRecvBuf, pktLen - 1, &tail);
+
+        if (tail != 0xFF)
+        {
+            /* Ö¡´íÎó£¬¶ªÆúÖ¡Í· */
+            RB_SkipBytes(&netRecvBuf, 1);
+            continue;
+        }
+
+        /* È¡³öÍêÕûÖ¡*/
+        uint8_t frame[512] = {0};
+        RB_PeekBlock(&netRecvBuf, 0, frame, pktLen);
+
+        /* Ğ£Ñé */
+        uint8_t recvXor = frame[pktLen - 2];
+        uint8_t calcXor = xorCheck(frame, pktLen - 2);
 
         if (recvXor == calcXor)
         {
-            uint8_t cmdNo = getCmdNo(frameBuf[2]);
+            uint8_t cmdNo = getCmdNo(frame[2]);
 
             if (cmdNo != 255)
             {
-                cmd_functions[cmdNo](frameBuf, pktLen);
+                cmd_functions[cmdNo](frame, pktLen);
             }
         }
 
-        memmove(frameBuf, frameBuf + pktLen, frameLen - pktLen);
-        frameLen -= pktLen;
+        /* Ïû·Ñ¸ÃÖ¡ */
+        RB_SkipBytes(&netRecvBuf, pktLen);
+    }
+}
+
+void TcpParse_Task(void *argument)
+{
+    osDelay(1000);
+    netRxSem = osSemaphoreNew(1, 1, NULL);
+
+    for (;;)
+    {
+        // µÈ´ıĞÂÊı¾İ
+        osSemaphoreAcquire(netRxSem, osWaitForever);
+
+        // ¾¡¿ÉÄÜ¶à½âÎö
+        Net_CmdHandler();
+        osDelay(5);
     }
 }
