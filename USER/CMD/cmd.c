@@ -29,8 +29,8 @@
 #include "voice.h"
 #include "w25qxx.h"
 
-extern volatile uint8_t light_level;      // 亮度等级
-const char product_info[] = {"V1.0.0.0"}; // 产品信息
+extern volatile uint8_t light_level;                 // 亮度等级
+const char product_info[] = {"程序编码:9J6F1C5112"}; // 产品信息
 
 extern RingBuffer netRecvBuf; // 网络接收缓冲区
 
@@ -109,11 +109,11 @@ void cmd_disPlayAll_ctrl(uint8_t *inbuf, uint16_t len)
 
     if (inbuf[4] == 0x00) // 全屏
     {
-        RenderString(0, 0, &inbuf[7], len - 9, (DispColor_t)fontColor, (FontSize_t)fontSize, (FontType_t)fontType, true);
+        RenderString(0, 0, &inbuf[7], len - 9, (DispColor_t)fontColor, (FontSize_t)fontSize, (FontType_t)func.ft_type, true);
     }
     else if (inbuf[4] <= 17) // 单行
     {
-        RenderString(0, (inbuf[4] - 1) * row_offset, &inbuf[7], len - 9, (DispColor_t)fontColor, (FontSize_t)fontSize, (FontType_t)fontType, false);
+        RenderString(0, (inbuf[4] - 1) * row_offset, &inbuf[7], len - 9, (DispColor_t)fontColor, (FontSize_t)fontSize, (FontType_t)func.ft_type, false);
     }
     cmdnack(inbuf, len);
 }
@@ -132,13 +132,13 @@ void cmd_clear_ctrl(uint8_t *inbuf, uint16_t len)
         switch (fontSize)
         {
         case font_16:
-            Disp_Fill(black, font16 * (inbuf[4] - 1) * SCREEN_PIXEL_ROW);
+            Disp_Fill(black, font16 * (inbuf[4] - 1));
             break;
         case font_20:
-            Disp_Fill(black, font20 * (inbuf[4] - 1) * SCREEN_PIXEL_ROW);
+            Disp_Fill(black, font20 * (inbuf[4] - 1));
             break;
         case font_24:
-            Disp_Fill(black, font24 * (inbuf[4] - 1) * SCREEN_PIXEL_ROW);
+            Disp_Fill(black, font24 * (inbuf[4] - 1));
             break;
         default:
             Disp_Fill(black, 0);
@@ -164,9 +164,15 @@ void cmd_setLight_ctrl(uint8_t *inbuf, uint16_t len)
 
     cmdnack(inbuf, len);
 
-    uint8_t LIGHT_CHECK_MSG[64] = {0};
-    snprintf((char *)LIGHT_CHECK_MSG, sizeof(LIGHT_CHECK_MSG), "%s%d", "setlight", light_level);
-    // BSP_W25Qx_EraseWrite(&hw25q256, LIGHT_CHECK_MSG, LIGHTADDR, 64); // 保存亮度等级到 Flash
+    _Func func_buf = {0};
+
+    W25Q256_Read(W25QXXFUNC, (uint8_t *)&func_buf, sizeof(_Func)); // 读取字体大小与类型
+
+    func_buf.ft_light = light_level;
+
+    func = func_buf;
+
+    W25Q256_WriteAutoErase(W25QXXFUNC, (uint8_t *)&func_buf, sizeof(_Func)); // 保存字体大小与类型
 }
 
 /*==============================================================================
@@ -186,6 +192,11 @@ void cmd_lamp_ctrl(uint8_t *inbuf, uint16_t len)
     {
         LAMP = 1;
     }
+
+    // 顶棚灯控制（定制）,USART3
+    static uint8_t lingbuf[32] = {0};
+    memcpy(lingbuf, inbuf, len);
+    RS232_Send(RS232_PORT_USART3, lingbuf, len);
 
     cmdnack(inbuf, len);
 }
@@ -244,13 +255,16 @@ void cmd_setfullscreen_ctrl(uint8_t *inbuf, uint16_t len)
  */
 void cmd_setfontsize_ctrl(uint8_t *inbuf, uint16_t len)
 {
-    uint8_t tempFontSize = fontSize;
-    uint8_t tempFontType = fontType;
+    _Func func_buf = {0};
 
-    uint8_t FONT_CHECK_MSG[64] = {0};
-    snprintf((char *)FONT_CHECK_MSG, sizeof(FONT_CHECK_MSG), "%s%d%d", "setfontsize", tempFontSize, tempFontType);
+    W25Q256_Read(W25QXXFUNC, (uint8_t *)&func_buf, sizeof(_Func)); // 读取字体大小与类型
 
-    // BSP_W25Qx_EraseWrite(&hw25q256, FONT_CHECK_MSG, FONTSIZEADDR, sizeof(FONT_CHECK_MSG));
+    func_buf.ft_size = inbuf[4] + 1;
+    func_buf.ft_type = inbuf[5];
+
+    func = func_buf;
+
+    W25Q256_WriteAutoErase(W25QXXFUNC, (uint8_t *)&func_buf, sizeof(_Func)); // 保存字体大小与类型
 
     cmdnack(inbuf, len);
 }
@@ -311,17 +325,12 @@ void cmd_Setip_ctrl(uint8_t *inbuf, uint16_t len)
  */
 void cmd_YY_ctrl(uint8_t *inbuf, uint16_t len)
 {
-    voice_msg_t msg;
+    uint16_t vio_len = len;
 
-    msg.volume = (inbuf[4] <= 8) ? inbuf[4] : 8;
-    msg.len = len - 7;
+    if (vio_len > VOICE_MAX_LEN)
+        vio_len = VOICE_MAX_LEN;
 
-    if (msg.len > VOICE_MAX_LEN)
-        msg.len = VOICE_MAX_LEN;
-
-    memcpy(msg.data, &inbuf[5], msg.len);
-
-    Voice_Send(msg.data, msg.len);
+    Voice_Send(inbuf, vio_len);
 
     cmdnack(inbuf, len);
 }
@@ -412,7 +421,7 @@ uint8_t getCmdNo(uint8_t cmdstr)
         break;
 
     case 0x08: /* 设备复位 */
-        tempCmd = 11;
+        tempCmd = 10;
         break;
 
     case 0x10: /* 获取栏杆状态 */

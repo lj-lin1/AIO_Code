@@ -4,15 +4,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define VOICE_MAX_LEN 256
+#define VOICE_MAX_LEN 128
 
-typedef struct
-{
-    uint8_t volume;
-    uint8_t data[VOICE_MAX_LEN];
-    uint16_t len;
-} voice_msg_t;
-
+void TxVoce(uint8_t *inbuf, uint16_t len);
 void Voice_Send(uint8_t *data, uint16_t len);
 
 #endif

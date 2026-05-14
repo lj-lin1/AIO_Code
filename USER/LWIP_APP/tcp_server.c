@@ -85,6 +85,25 @@ static void tcp_server_err(void *arg, err_t err)
 }
 
 /* ================= accept 回调 ================= */
+static void tcp_server_kill_session(void)
+{
+    if (g_session && g_session->pcb)
+    {
+        /* 解绑回调，防止野指针 */
+        tcp_arg(g_session->pcb, NULL);
+        tcp_recv(g_session->pcb, NULL);
+        tcp_err(g_session->pcb, NULL);
+
+        /* 强制断开 */
+        tcp_abort(g_session->pcb);
+
+        free(g_session);
+        g_session = NULL;
+
+        osEventFlagsSet(g_netEvent, NET_EVT_CLOSE);
+    }
+}
+
 static err_t tcp_server_accept(void *arg,
                                struct tcp_pcb *pcb,
                                err_t err)
@@ -92,7 +111,7 @@ static err_t tcp_server_accept(void *arg,
     /* 只允许一个连接 */
     if (g_session)
     {
-        tcp_abort(pcb);
+        tcp_server_kill_session();
         return ERR_ABRT;
     }
 
@@ -158,6 +177,7 @@ static void net_send_cb(void *arg)
         g_session->pcb == ctx->pcb &&
         g_session->connected)
     {
+        tcp_nagle_disable(ctx->pcb);
         if (tcp_write(ctx->pcb,
                       ctx->data,
                       ctx->len,

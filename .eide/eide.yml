@@ -251,7 +251,7 @@ targets:
             language-cpp: c++23
             one-elf-section-per-data: true
             one-elf-section-per-function: true
-            optimization: level-debug
+            optimization: level-3
             warnings: all-warnings
           global:
             $float-abi-type: hard
@@ -284,4 +284,11 @@ targets:
         bin: ""
         interface: cmsis-dap
         target: stm32f4x
-    uploader: JLink
+      pyOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        config: .eide/debug.pyocd.yaml
+        otherCmds: ""
+        speed: 4M
+        targetName: cortex_m
+    uploader: OpenOCD

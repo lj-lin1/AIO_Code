@@ -67,6 +67,16 @@ typedef enum {
     white,
 } DispColor_t;
 
+// 字样
+typedef struct {
+    uint8_t FuncFlag[9];
+    FontSize_t ft_size; // 字号
+    FontType_t ft_type; // 字型
+    uint8_t ft_light;   // 字体亮度
+} _Func;
+
+extern _Func func;
+
 extern uint16_t max_display_len;
 
 void Disp_Fill(DispColor_t color, uint32_t start_y);
@@ -78,5 +88,7 @@ void RenderChar(const uint8_t *p_text, uint16_t *x, uint16_t *y, FontSize_t font
 uint8_t auto_font_size(uint16_t len, uint8_t size);
 uint16_t auto_line(uint8_t line, uint8_t font_size);
 uint16_t set_align(uint16_t len, uint8_t font_size, uint8_t align);
+
+void PowerOnFuncSet(void);
 
 #endif // DRIVERS_BSP_DISPLAY_RENDER_H

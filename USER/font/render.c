@@ -4,6 +4,12 @@
 #include "hub75.h"
 #include "w25qxx.h"
 
+_Func func = {
+    .ft_size = font_14,
+    .ft_type = font_fs,
+    .ft_light = 4,
+};
+
 typedef uint32_t (*getFontLibraryAddr)(uint32_t, const uint8_t *, FontType_t, uint16_t);
 extern osThreadId_t Display_TaskHandle;
 
@@ -77,34 +83,34 @@ void Disp_Fill(DispColor_t color, uint32_t start_y)
         switch (fontSize)
         {
         case font_14: {
-            for (uint32_t i = row_offset; i < font14 * SCREEN_PIXEL_ROW; i++)
+            for (uint32_t i = row_offset; i < row_offset + (font14 * SCREEN_PIXEL_ROW); i++)
             {
                 pixel_map[i] = color;
             }
         }
         case font_16: {
-            for (uint32_t i = row_offset; i < font16 * SCREEN_PIXEL_ROW; i++)
+            for (uint32_t i = row_offset; i < row_offset + (font16 * SCREEN_PIXEL_ROW); i++)
             {
                 pixel_map[i] = color;
             }
         }
         break;
         case font_20: {
-            for (uint32_t i = row_offset; i < font20 * SCREEN_PIXEL_ROW; i++)
+            for (uint32_t i = row_offset; i < row_offset + (font20 * SCREEN_PIXEL_ROW); i++)
             {
                 pixel_map[i] = color;
             }
         }
         break;
         case font_24: {
-            for (uint32_t i = row_offset; i < font24 * SCREEN_PIXEL_ROW; i++)
+            for (uint32_t i = row_offset; i < row_offset + (font24 * SCREEN_PIXEL_ROW); i++)
             {
                 pixel_map[i] = color;
             }
         }
         break;
         case font_32: {
-            for (uint32_t i = row_offset; i < font32 * SCREEN_PIXEL_ROW; i++)
+            for (uint32_t i = row_offset; i < row_offset + (font32 * SCREEN_PIXEL_ROW); i++)
             {
                 pixel_map[i] = color;
             }
@@ -154,6 +160,10 @@ void RenderString(uint32_t start_x, uint32_t start_y, const uint8_t *p_text, uin
     uint16_t cur_x = start_x;
     uint16_t cur_y = start_y;
 
+    fontColor = color;
+    fontSize = font_size;
+    fontType = font_type;
+
     // 边界检查
     if (font_size < font_14)
         font_size = font_14;
@@ -169,10 +179,15 @@ void RenderString(uint32_t start_x, uint32_t start_y, const uint8_t *p_text, uin
     uint16_t i = 0;
     while (i < text_len)
     {
+        // 全屏边界检测
+        if (SCREEN_PIXEL_COL - cur_y < Font_Height_Table[font_size])
+        {
+            break;
+        }
         // "_" 和 "\n" 换行
         if (i + 1 < text_len)
         {
-            if ((p_text[i] == '\n') || (p_text[i] == '_'))
+            if (((p_text[i] == '\n') || (p_text[i] == '_')) && line_break)
             {
                 cur_x = 0;
                 cur_y += Font_Height_Table[font_size];
@@ -226,6 +241,12 @@ void RenderChar(const uint8_t *p_text, uint16_t *x, uint16_t *y, FontSize_t font
         *y += CHAR_HEIGHT;
         *x = 0;
     }
+
+    if (*y > SCREEN_PIXEL_COL - CHAR_HEIGHT)
+        return;
+
+    if (*x > SCREEN_PIXEL_ROW - CHAR_WEIGHT)
+        return;
 
     for (uint8_t i = 0; i < CHAR_HEIGHT; i++)
     { // 行遍历
@@ -387,4 +408,28 @@ uint16_t set_align(uint16_t len, uint8_t font_size, uint8_t align)
     }
 
     return x;
+}
+
+void PowerOnFuncSet(void)
+{
+    uint8_t font_flag[9] = "setfont";
+    _Func temp_buf = {0};
+
+    W25Q256_Read(W25QXXFUNC, (uint8_t *)&temp_buf, sizeof(_Func));
+
+    if (memcmp(temp_buf.FuncFlag, font_flag, 8) == 0)
+    {
+        func = temp_buf;
+    }
+    else
+    {
+        memcpy(func.FuncFlag, font_flag, 9);
+        func.ft_size = font_16;
+        func.ft_type = font_ht;
+        func.ft_light = 4;
+
+        W25Q256_WriteAutoErase(W25QXXFUNC, (uint8_t *)&func, sizeof(_Func));
+    }
+
+    light_level = func.ft_light;
 }

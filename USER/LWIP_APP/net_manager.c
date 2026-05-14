@@ -41,6 +41,7 @@ void TCP_Manager_Task(void *argument)
             {
                 g_netState = NET_STATE_WAIT_ACCEPT;
                 TCP_Server_Init();
+                RB_SkipBytes(&netRecvBuf, RB_GetAvailable(&netRecvBuf)); // 清空接收缓冲区
             }
         }
 
@@ -49,6 +50,7 @@ void TCP_Manager_Task(void *argument)
         {
             if (g_netState == NET_STATE_CONNECTED)
             {
+                RB_SkipBytes(&netRecvBuf, RB_GetAvailable(&netRecvBuf)); // 清空接收缓冲区
                 g_netState = NET_STATE_WAIT_ACCEPT;
             }
         }

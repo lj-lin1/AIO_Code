@@ -48,6 +48,7 @@ typedef uint8_t u8;
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
 #define W25QXXIPADDR 32 * 1024 * 1024 - 4096
+#define W25QXXFUNC   32 * 1024 * 1024 - 4096 * 2
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/

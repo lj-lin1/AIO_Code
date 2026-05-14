@@ -121,6 +121,7 @@ int main(void)
     W25Q256_Init(&hspi1);
     HAL_TIM_Base_Start_IT(&htim2);
     PowerOnIpSet();
+    PowerOnFuncSet();
     /* USER CODE END 2 */
 
     /* Init scheduler */

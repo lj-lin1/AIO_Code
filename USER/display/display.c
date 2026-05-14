@@ -1,5 +1,6 @@
 #include "display.h"
 #include "tim.h"
+#include "voice.h"
 
 osThreadId_t RefreshTaskHandle;
 const osThreadAttr_t RefreshTask_attributes = {
@@ -309,6 +310,11 @@ void Display_Task(void *argument)
     memset(hub75_buff, 0, sizeof(hub75_buff));
     HAL_TIM_Base_Start_IT(&htim3);
     HAL_TIM_Base_Start_IT(&htim4);
+
+    RenderString(0, 0, (uint8_t *)"欢迎行驶_高速公路_祝您旅途愉快", strlen("欢迎行驶_高速公路_祝您旅途愉快"), green, func.ft_size, func.ft_type, true);
+    TxVoce((uint8_t *)"欢迎行驶 高速公路 祝您旅途愉快", strlen("欢迎行驶 高速公路 祝您旅途愉快"));
+
+    convert_pixelmap();
 
     for (;;)
     {
